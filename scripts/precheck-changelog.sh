@@ -1,74 +1,104 @@
 #!/bin/bash
 set -euo pipefail
 
-# D-1: CHANGELOG check
-# Reads CHANGELOG patterns from .sentinel/config.yaml
+# D-1: CHANGELOG 留痕检查
+# 规则：如果治理文件（governance_files）被修改，则必须同步更新 CHANGELOG
+# 如果没有治理文件被修改，自动 PASS
 
 CONFIG_FILE="${CONFIG_FILE:-.sentinel/config.yaml}"
 RESULTS_DIR="${RESULTS_DIR:-.sentinel/results}"
 
-# Ensure results directory exists
 mkdir -p "$RESULTS_DIR"
 
-# YAML value reader (no yq dependency)
+# YAML helpers (no yq dependency)
 yaml_get() {
   local file="$1" key="$2" default="${3:-}"
   local val=$(grep -E "^\s*${key}:" "$file" 2>/dev/null | head -1 | sed 's/^[^:]*:\s*//' | sed 's/\s*#.*//' | tr -d '"' | tr -d "'")
   echo "${val:-$default}"
 }
 
-# YAML array reader
 yaml_get_array() {
   local file="$1" key="$2"
   sed -n "/^\s*${key}:/,/^\s*[a-z]/p" "$file" 2>/dev/null | { grep "^\s*-" || true; } | sed 's/^\s*-\s*//' | tr -d '"' | tr -d "'"
 }
 
-# Initialize result
+echo "D-1: CHANGELOG check"
+
+# Detect changed files: PR diff or push commit diff
+if [ -n "${BASE_REF:-}" ]; then
+  CHANGED_FILES=$(git diff --name-only "origin/${BASE_REF}...HEAD" 2>/dev/null || echo "")
+elif git rev-parse HEAD~1 >/dev/null 2>&1; then
+  CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+else
+  CHANGED_FILES=$(git diff --cached --name-only 2>/dev/null || echo "")
+fi
+
+if [ -z "$CHANGED_FILES" ]; then
+  echo "No changed files detected — PASS"
+  cat > "$RESULTS_DIR/d1-changelog.json" <<EOF
+{"check_id":"D-1","check_name":"CHANGELOG","passed":true,"issues":[],"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+EOF
+  exit 0
+fi
+
+echo "Changed files in this commit/PR:"
+echo "$CHANGED_FILES" | head -20
+
+# Read governance files list from config
+GOVERNANCE_FILES=$(yaml_get_array "$CONFIG_FILE" "governance_files")
+if [ -z "$GOVERNANCE_FILES" ]; then
+  echo "No governance_files configured — PASS"
+  cat > "$RESULTS_DIR/d1-changelog.json" <<EOF
+{"check_id":"D-1","check_name":"CHANGELOG","passed":true,"issues":[],"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+EOF
+  exit 0
+fi
+
+# Read changelog file name (default: CHANGELOG.md)
+CHANGELOG_FILE=$(yaml_get "$CONFIG_FILE" "changelog_file" "CHANGELOG.md")
+
+# Check: did any governance file change?
+MODIFIED_GOV_FILES=()
+while IFS= read -r gov_file; do
+  [ -z "$gov_file" ] && continue
+  if echo "$CHANGED_FILES" | grep -q "^${gov_file}$"; then
+    MODIFIED_GOV_FILES+=("$gov_file")
+  fi
+done <<< "$GOVERNANCE_FILES"
+
 PASSED=true
 ISSUES=()
 
-# Read governance files from config
-GOVERNANCE_FILES=$(yaml_get_array "$CONFIG_FILE" "governance_files")
-
-if [ -z "$GOVERNANCE_FILES" ]; then
-  GOVERNANCE_FILES=$(echo -e "CHANGELOG.md\nCHANGELOG.txt")
-fi
-
-echo "D-1: CHANGELOG check"
-echo "Governance files: $GOVERNANCE_FILES"
-
-# Check that at least one governance file exists and has been modified
-FOUND_GOVERNANCE=false
-for gov_file in $GOVERNANCE_FILES; do
-  if [ -f "$gov_file" ]; then
-    FOUND_GOVERNANCE=true
-    if git diff --cached --name-only 2>/dev/null | grep -q "^${gov_file}$"; then
-      echo "✓ Found modified $gov_file"
-    else
-      echo "! No changes to $gov_file in this commit"
-      ISSUES+=("$gov_file has not been modified in this commit")
-    fi
-  fi
-done
-
-if [ "$FOUND_GOVERNANCE" = false ]; then
-  PASSED=false
-  ISSUES+=("No governance files found (checked: $GOVERNANCE_FILES)")
-  echo "✗ No governance files found"
+if [ ${#MODIFIED_GOV_FILES[@]} -eq 0 ]; then
+  echo "No governance files modified in this change — PASS"
 else
-  if [ ${#ISSUES[@]} -gt 0 ]; then
-    PASSED=false
+  echo "Modified governance files: ${MODIFIED_GOV_FILES[*]}"
+  # Check if CHANGELOG was also updated
+  if echo "$CHANGED_FILES" | grep -q "^${CHANGELOG_FILE}$"; then
+    echo "✓ ${CHANGELOG_FILE} was updated alongside governance changes"
+  else
+    # Also accept RULINGS.md update as changelog equivalent
+    if echo "$CHANGED_FILES" | grep -q "^RULINGS.md$"; then
+      echo "✓ RULINGS.md was updated (accepted as changelog equivalent)"
+    else
+      PASSED=false
+      for gf in "${MODIFIED_GOV_FILES[@]}"; do
+        ISSUES+=("${gf} was modified but ${CHANGELOG_FILE} was not updated")
+      done
+      echo "✗ Governance files changed but ${CHANGELOG_FILE} not updated"
+    fi
   fi
 fi
 
 # Generate result JSON
 RESULT_FILE="$RESULTS_DIR/d1-changelog.json"
+ISSUES_JSON=$(if [ ${#ISSUES[@]} -gt 0 ]; then printf '%s\n' "${ISSUES[@]}"; fi | jq -R . | jq -s .)
 cat > "$RESULT_FILE" <<EOF
 {
   "check_id": "D-1",
   "check_name": "CHANGELOG",
   "passed": $([[ "$PASSED" == true ]] && echo "true" || echo "false"),
-  "issues": $(if [ ${#ISSUES[@]} -gt 0 ]; then printf '%s\n' "${ISSUES[@]}"; fi | jq -R . | jq -s .),
+  "issues": ${ISSUES_JSON:-[]},
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF
@@ -80,4 +110,5 @@ if [ "$PASSED" = false ]; then
   exit 1
 fi
 
+echo "✓ D-1 PASS"
 exit 0
