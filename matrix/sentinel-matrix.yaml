@@ -112,6 +112,15 @@ dimensions:
         trigger: "Mission/架构/Gate 逻辑/破坏性变更"
         phase: 1
 
+      # Added per Ruling R-0082-TEST; requires L0 approval (PolicyChange)
+      - id: GPC-099
+        name: "Cross-repo ruling conflict detection"
+        severity: P1
+        method: llm
+        source: "R-0082"
+        trigger: "governance file changes"
+        phase: 2
+
   design_brand:
     id: DBC
     name: "设计与品牌一致性"
