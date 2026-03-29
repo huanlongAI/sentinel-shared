@@ -163,3 +163,4 @@ Produce the complete updated sentinel-matrix.yaml with this change applied."
             --title "Manual matrix update needed: ${RULING_ID}" \
             --body "$BODY" \
             --label "matrix-update"
+# re-register
