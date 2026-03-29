@@ -7,7 +7,6 @@ set -euo pipefail
 CONFIG_FILE="${CONFIG_FILE:-.sentinel/config.yaml}"
 RESULTS_DIR="${RESULTS_DIR:-.sentinel/results}"
 
-# Ensure results directory exists
 mkdir -p "$RESULTS_DIR"
 
 # YAML value reader (no yq dependency)
@@ -18,10 +17,6 @@ yaml_get() {
 }
 
 # Parse nested YAML cascade_map into key=value pairs
-# Expects format:
-# cascade_map:
-#   src/module_a: src/module_b
-#   src/module_b: src/module_c
 parse_cascade_map() {
   local file="$1"
   sed -n "/^\s*cascade_map:/,/^\s*[a-z]/p" "$file" 2>/dev/null | \
@@ -36,8 +31,10 @@ echo "D-3: Cascade integrity"
 CASCADE_MAP=$(parse_cascade_map "$CONFIG_FILE")
 
 if [ -z "$CASCADE_MAP" ]; then
-  echo "No cascade rules configured"
-  echo "{}"> "$RESULTS_DIR/d3-cascade.json"
+  echo "No cascade rules configured — PASS"
+  cat > "$RESULTS_DIR/d3-cascade.json" <<EOF
+{"check_id":"D-3","check_name":"Cascade Integrity","passed":true,"issues":[],"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+EOF
   exit 0
 fi
 
@@ -50,22 +47,27 @@ done
 PASSED=true
 ISSUES=()
 
-# Get list of modified files
-MODIFIED_FILES=$(git diff --cached --name-only 2>/dev/null || echo "")
+# Detect changed files: PR diff or push commit diff
+if [ -n "${BASE_REF:-}" ]; then
+  CHANGED_FILES=$(git diff --name-only "origin/${BASE_REF}...HEAD" 2>/dev/null || echo "")
+elif git rev-parse HEAD~1 >/dev/null 2>&1; then
+  CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+else
+  CHANGED_FILES=$(git diff --cached --name-only 2>/dev/null || echo "")
+fi
 
-if [ -z "$MODIFIED_FILES" ]; then
-  echo "No modified files to check"
+if [ -z "$CHANGED_FILES" ]; then
+  echo "No changed files to check — PASS"
 else
   # Check cascade rules
   while IFS= read -r rule; do
     [ -z "$rule" ] && continue
-
     # Parse source=target
     source="${rule%=*}"
     target="${rule#*=}"
 
     # Check if source file was modified
-    if echo "$MODIFIED_FILES" | grep -q "^${source}$"; then
+    if echo "$CHANGED_FILES" | grep -q "^${source}$"; then
       # Verify target also exists and check if it needs update
       if [ ! -f "$target" ]; then
         ISSUES+=("Cascade rule violation: $source modified but target $target does not exist")
@@ -73,10 +75,9 @@ else
         echo "✗ Target $target does not exist for source $source"
       else
         echo "✓ Cascade rule verified: $source -> $target"
-
         # Optionally verify target was also modified
-        if ! echo "$MODIFIED_FILES" | grep -q "^${target}$"; then
-          echo "⚠ Source $source modified but target $target not staged (may be intentional)"
+        if ! echo "$CHANGED_FILES" | grep -q "^${target}$"; then
+          echo "⚠ Source $source modified but target $target not changed (may be intentional)"
         fi
       fi
     fi
@@ -103,4 +104,5 @@ if [ "$PASSED" = false ]; then
   exit 1
 fi
 
+echo "✓ D-3 PASS"
 exit 0
