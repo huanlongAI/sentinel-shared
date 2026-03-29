@@ -26,7 +26,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
         run: |
-          PASS=0; FAIL=0; STALE=0; TOTAL=0; REPORT=""; NOW=$(date +%s)
+          PASS=0; FAIL=0; STALE=0; TOTAL=0; NUDGED=""; NOW=$(date +%s)
+          REPORT=""; CURRENT_FAILING=""; CURRENT_PASSING=""
+
           for REPO in $DOWNSTREAM_REPOS; do
             TOTAL=$((TOTAL + 1))
             RUN_DATA=$(curl -s \
@@ -34,42 +36,65 @@ jobs:
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/huanlongAI/${REPO}/actions/runs?per_page=5&branch=main" \
               | jq '[.workflow_runs[] | select(.name == "Consistency Sentinel" or .path == ".github/workflows/consistency-sentinel.yml")] | .[0] // empty')
+
             if [ -z "$RUN_DATA" ] || [ "$RUN_DATA" = "null" ]; then
               REPORT="${REPORT}| ${REPO} | -- no data | - | - |\n"
               STALE=$((STALE + 1)); continue
             fi
+
             CONCLUSION=$(echo "$RUN_DATA" | jq -r '.conclusion // "pending"')
             RUN_URL=$(echo "$RUN_DATA" | jq -r '.html_url // "N/A"')
             UPDATED=$(echo "$RUN_DATA" | jq -r '.updated_at // ""')
+
             if [ -n "$UPDATED" ]; then
               RUN_TS=$(date -d "$UPDATED" +%s 2>/dev/null || echo 0)
               AGE_H=$(( (NOW - RUN_TS) / 3600 )); AGE_STR="${AGE_H}h ago"
             else
               AGE_STR="unknown"; AGE_H=999
             fi
+
             case "$CONCLUSION" in
               success)
                 if [ "$AGE_H" -gt 48 ]; then
                   REPORT="${REPORT}| ${REPO} | STALE | ${AGE_STR} | [Run](${RUN_URL}) |\n"
                   STALE=$((STALE + 1))
+                  # --- Stale Nudge: re-trigger if >72h ---
+                  if [ "$AGE_H" -gt 72 ]; then
+                    NUDGE_RESULT=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+                      -H "Authorization: token ${GH_TOKEN}" \
+                      -H "Accept: application/vnd.github+json" \
+                      "https://api.github.com/repos/huanlongAI/${REPO}/actions/workflows/consistency-sentinel.yml/dispatches" \
+                      -d '{"ref":"main","inputs":{"skip_llm":"true"}}' 2>/dev/null || echo "000")
+                    if [ "$NUDGE_RESULT" = "204" ]; then
+                      NUDGED="${NUDGED}${REPO}, "
+                    fi
+                  fi
                 else
                   REPORT="${REPORT}| ${REPO} | PASS | ${AGE_STR} | [Run](${RUN_URL}) |\n"
                   PASS=$((PASS + 1))
+                  CURRENT_PASSING="${CURRENT_PASSING}${REPO},"
                 fi ;;
               failure)
                 REPORT="${REPORT}| ${REPO} | FAIL | ${AGE_STR} | [Run](${RUN_URL}) |\n"
-                FAIL=$((FAIL + 1)) ;;
+                FAIL=$((FAIL + 1))
+                CURRENT_FAILING="${CURRENT_FAILING}${REPO}," ;;
               *)
                 REPORT="${REPORT}| ${REPO} | ${CONCLUSION} | ${AGE_STR} | [Run](${RUN_URL}) |\n"
                 STALE=$((STALE + 1)) ;;
             esac
             sleep 0.2
           done
+
           echo "total=${TOTAL}" >> "$GITHUB_OUTPUT"
           echo "pass=${PASS}" >> "$GITHUB_OUTPUT"
           echo "fail=${FAIL}" >> "$GITHUB_OUTPUT"
           echo "stale=${STALE}" >> "$GITHUB_OUTPUT"
+          echo "nudged=${NUDGED}" >> "$GITHUB_OUTPUT"
+          echo "current_failing=${CURRENT_FAILING}" >> "$GITHUB_OUTPUT"
+          echo "current_passing=${CURRENT_PASSING}" >> "$GITHUB_OUTPUT"
+
           printf "| Repo | Status | Last Run | Details |\n|------|--------|----------|--------|\n${REPORT}" > /tmp/report.md
+
           HEALTH_PCT=0
           if [ "$TOTAL" -gt 0 ]; then HEALTH_PCT=$(( PASS * 100 / TOTAL )); fi
           {
@@ -81,8 +106,115 @@ jobs:
             echo ""
             cat /tmp/report.md
           } > /tmp/summary.md
+
+      - name: Trend detection
+        id: trend
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
+        run: |
+          # Fetch the most recent dashboard-report issue to compare
+          PREV_BODY=$(curl -s \
+            -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/huanlongAI/sentinel-shared/issues?state=all&labels=dashboard-report&per_page=1&sort=created&direction=desc" \
+            | jq -r '.[0].body // ""')
+
+          # Extract previously failing repos from the last report
+          PREV_FAILING=""
+          if [ -n "$PREV_BODY" ]; then
+            PREV_FAILING=$(echo "$PREV_BODY" | grep "| FAIL |" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}' | tr '\n' ',' || true)
+          fi
+
+          CURRENT_FAILING="${{ steps.agg.outputs.current_failing }}"
+          CURRENT_PASSING="${{ steps.agg.outputs.current_passing }}"
+
+          # Compute new failures (in current but not in previous)
+          NEW_FAILURES=""
+          IFS=',' read -ra CUR_FAIL_ARR <<< "$CURRENT_FAILING"
+          for repo in "${CUR_FAIL_ARR[@]}"; do
+            [ -z "$repo" ] && continue
+            if ! echo "$PREV_FAILING" | grep -q "$repo"; then
+              NEW_FAILURES="${NEW_FAILURES}${repo}, "
+            fi
+          done
+
+          # Compute recovered (in previous failing but now passing)
+          RECOVERED=""
+          IFS=',' read -ra PREV_FAIL_ARR <<< "$PREV_FAILING"
+          for repo in "${PREV_FAIL_ARR[@]}"; do
+            [ -z "$repo" ] && continue
+            if echo "$CURRENT_PASSING" | grep -q "$repo"; then
+              RECOVERED="${RECOVERED}${repo}, "
+            fi
+          done
+
+          # Compute persistent failures (in both previous and current)
+          PERSISTENT=""
+          for repo in "${CUR_FAIL_ARR[@]}"; do
+            [ -z "$repo" ] && continue
+            if echo "$PREV_FAILING" | grep -q "$repo"; then
+              PERSISTENT="${PERSISTENT}${repo}, "
+            fi
+          done
+
+          NUDGED="${{ steps.agg.outputs.nudged }}"
+
+          # Append trend section to summary
+          {
+            echo ""
+            echo "### Trend"
+            if [ -n "$NEW_FAILURES" ]; then
+              echo "NEW failures: ${NEW_FAILURES%,*}"
+            fi
+            if [ -n "$RECOVERED" ]; then
+              echo "Recovered: ${RECOVERED%,*}"
+            fi
+            if [ -n "$PERSISTENT" ]; then
+              echo "Persistent: ${PERSISTENT%,*}"
+            fi
+            if [ -z "$NEW_FAILURES" ] && [ -z "$RECOVERED" ] && [ -z "$PERSISTENT" ]; then
+              echo "No changes since last report."
+            fi
+            if [ -n "$NUDGED" ]; then
+              echo ""
+              echo "### Auto-Nudge"
+              echo "Triggered re-run on: ${NUDGED%,*} (stale >72h, skip_llm=true)"
+            fi
+          } >> /tmp/summary.md
+
+          echo "new_failures=${NEW_FAILURES}" >> "$GITHUB_OUTPUT"
+          echo "recovered=${RECOVERED}" >> "$GITHUB_OUTPUT"
+
       - name: Step summary
         run: cat /tmp/summary.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Save dashboard report issue
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
+        run: |
+          # Always create a dashboard-report issue (closed) as historical record
+          # for trend detection on next run
+          BODY=$(cat /tmp/summary.md)
+          ISSUE_URL=$(curl -s -X POST \
+            -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/huanlongAI/sentinel-shared/issues" \
+            -d "$(jq -n \
+              --arg title "Dashboard Report $(date -u +%Y-%m-%d)" \
+              --arg body "$BODY" \
+              '{title: $title, body: $body, labels: ["dashboard-report"]}')" \
+            | jq -r '.html_url // "N/A"')
+          echo "Report saved: $ISSUE_URL"
+          # Auto-close the report issue (it's just for record-keeping)
+          ISSUE_NUM=$(echo "$ISSUE_URL" | grep -oP '\d+$' || true)
+          if [ -n "$ISSUE_NUM" ]; then
+            curl -s -X PATCH \
+              -H "Authorization: token ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/huanlongAI/sentinel-shared/issues/${ISSUE_NUM}" \
+              -d '{"state":"closed"}' > /dev/null
+          fi
+
       - name: Alert on failure
         if: steps.agg.outputs.fail != '0'
         env:
@@ -90,7 +222,15 @@ jobs:
         run: |
           FAIL="${{ steps.agg.outputs.fail }}"
           TOTAL="${{ steps.agg.outputs.total }}"
+          NEW="${{ steps.trend.outputs.new_failures }}"
           BODY=$(cat /tmp/summary.md)
+
+          # Only create alert issue if there are NEW failures (not persistent)
+          if [ -z "$NEW" ]; then
+            echo "No new failures -- skipping alert issue (persistent failures only)."
+            exit 0
+          fi
+
           EXISTING=$(curl -s \
             -H "Authorization: token ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
@@ -102,7 +242,7 @@ jobs:
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/huanlongAI/sentinel-shared/issues" \
               -d "$(jq -n \
-                --arg title "Sentinel: ${FAIL}/${TOTAL} repos failing" \
+                --arg title "Sentinel: ${FAIL}/${TOTAL} repos failing (new: ${NEW%,*})" \
                 --arg body "$BODY" \
                 '{title: $title, body: $body, labels: ["dashboard-alert"]}')"
           fi
