@@ -56,30 +56,32 @@ jobs:
         run: .sentinel-shared/scripts/precheck-changelog.sh
 
       - name: "D-2: 术语 SSOT 扫描"
+        if: always()
         run: .sentinel-shared/scripts/precheck-terminology.sh
 
       - name: "D-3: 级联引用完整性"
+        if: always()
         run: .sentinel-shared/scripts/precheck-cascade.sh
 
       # D-4~D-6 are Phase 1 additions, scripts will PASS/SKIP if not applicable
       - name: "D-4: 目录规范对齐"
-        if: hashFiles('.sentinel-shared/scripts/precheck-directory.sh') != ''
+        if: always() && hashFiles('.sentinel-shared/scripts/precheck-directory.sh') != ''
         run: .sentinel-shared/scripts/precheck-directory.sh
         continue-on-error: true
 
       - name: "D-5: 能力来源标注扫描"
-        if: hashFiles('.sentinel-shared/scripts/precheck-capability-source.sh') != ''
+        if: always() && hashFiles('.sentinel-shared/scripts/precheck-capability-source.sh') != ''
         run: .sentinel-shared/scripts/precheck-capability-source.sh
         continue-on-error: true
 
       - name: "D-6: Brand Token 硬编码检测"
-        if: hashFiles('.sentinel-shared/scripts/precheck-brand-token.sh') != ''
+        if: always() && hashFiles('.sentinel-shared/scripts/precheck-brand-token.sh') != ''
         run: .sentinel-shared/scripts/precheck-brand-token.sh
         continue-on-error: true
 
       # ---- LLM 一致性审查层 ----
       - name: "LLM: 语义一致性审查"
-        if: inputs.skip_llm != 'true'
+        if: always() && inputs.skip_llm != 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: .sentinel-shared/scripts/llm-review.sh
