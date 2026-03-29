@@ -20,7 +20,7 @@ yaml_get() {
 # YAML array reader
 yaml_get_array() {
   local file="$1" key="$2"
-  sed -n "/^\s*${key}:/,/^\s*[a-z]/p" "$file" 2>/dev/null | grep '^\s*-' | sed 's/^\s*-\s*//' | tr -d '"' | tr -d "'"
+  sed -n "/^\s*${key}:/,/^\s*[a-z]/p" "$file" 2>/dev/null | { grep "^\s*-" || true; } | sed 's/^\s*-\s*//' | tr -d '"' | tr -d "'"
 }
 
 echo "D-2: Terminology scan"
@@ -91,7 +91,7 @@ cat > "$RESULT_FILE" <<EOF
   "check_id": "D-2",
   "check_name": "Terminology",
   "passed": $([[ "$PASSED" == true ]] && echo "true" || echo "false"),
-  "violations": $(printf '%s\n' "${VIOLATIONS[@]}" | jq -R . | jq -s .),
+  "violations": $(if [ ${#VIOLATIONS[@]} -gt 0 ]; then printf '%s\n' "${VIOLATIONS[@]}"; fi | jq -R . | jq -s .),
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF

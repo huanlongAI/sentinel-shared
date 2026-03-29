@@ -21,7 +21,7 @@ yaml_get() {
 # YAML array reader
 yaml_get_array() {
   local file="$1" key="$2"
-  sed -n "/^\s*${key}:/,/^\s*[a-z]/p" "$file" 2>/dev/null | grep '^\s*-' | sed 's/^\s*-\s*//' | tr -d '"' | tr -d "'"
+  sed -n "/^\s*${key}:/,/^\s*[a-z]/p" "$file" 2>/dev/null | { grep "^\s*-" || true; } | sed 's/^\s*-\s*//' | tr -d '"' | tr -d "'"
 }
 
 echo "LLM Review Layer"

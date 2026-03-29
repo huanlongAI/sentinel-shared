@@ -20,7 +20,7 @@ yaml_get() {
 # YAML array reader
 yaml_get_array() {
   local file="$1" key="$2"
-  sed -n "/^\s*${key}:/,/^\s*[a-z]/p" "$file" 2>/dev/null | grep '^\s*-' | sed 's/^\s*-\s*//' | tr -d '"' | tr -d "'"
+  sed -n "/^\s*${key}:/,/^\s*[a-z]/p" "$file" 2>/dev/null | { grep "^\s*-" || true; } | sed 's/^\s*-\s*//' | tr -d '"' | tr -d "'"
 }
 
 # Initialize result
@@ -68,7 +68,7 @@ cat > "$RESULT_FILE" <<EOF
   "check_id": "D-1",
   "check_name": "CHANGELOG",
   "passed": $([[ "$PASSED" == true ]] && echo "true" || echo "false"),
-  "issues": $(printf '%s\n' "${ISSUES[@]}" | jq -R . | jq -s .),
+  "issues": $(if [ ${#ISSUES[@]} -gt 0 ]; then printf '%s\n' "${ISSUES[@]}"; fi | jq -R . | jq -s .),
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF

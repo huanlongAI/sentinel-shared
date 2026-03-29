@@ -25,7 +25,7 @@ yaml_get() {
 parse_cascade_map() {
   local file="$1"
   sed -n "/^\s*cascade_map:/,/^\s*[a-z]/p" "$file" 2>/dev/null | \
-    grep -E "^\s+[^ :]+:\s+" | \
+    { grep -E "^\s+[^ :]+:\s+" || true; } | \
     sed 's/^\s*//' | \
     sed 's/:\s*/=/'
 }
@@ -90,7 +90,7 @@ cat > "$RESULT_FILE" <<EOF
   "check_id": "D-3",
   "check_name": "Cascade Integrity",
   "passed": $([[ "$PASSED" == true ]] && echo "true" || echo "false"),
-  "issues": $(printf '%s\n' "${ISSUES[@]}" | jq -R . | jq -s .),
+  "issues": $(if [ ${#ISSUES[@]} -gt 0 ]; then printf '%s\n' "${ISSUES[@]}"; fi | jq -R . | jq -s .),
   "rules_checked": $(echo "$CASCADE_MAP" | wc -l),
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
