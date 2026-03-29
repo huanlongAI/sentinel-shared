@@ -5,6 +5,13 @@
 name: Matrix Auto-Update
 
 on:
+  workflow_dispatch:
+    inputs:
+      test_change:
+        description: Manual test matrix change description
+        required: false
+        default: Test matrix change
+        type: string
   repository_dispatch:
     types: [matrix-update]
 
