@@ -12,9 +12,6 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
     steps:
-      - run: echo 'job-level permissions works'
+      - uses: actions/checkout@v4
+      - run: echo 'checkout works' && ls
