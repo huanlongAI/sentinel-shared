@@ -1,0 +1,156 @@
+# ============================================================================
+# Sentinel Status Dashboard — Phase 2 WP-9
+# Aggregates sentinel health across all downstream repos
+# Runs on schedule + manual trigger, outputs to GITHUB_STEP_SUMMARY
+# ============================================================================
+name: Sentinel Dashboard
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+    inputs:
+      verbose:
+        description: 'Show detailed per-check results'
+        required: false
+        default: 'false'
+        type: boolean
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  DOWNSTREAM_REPOS: >-
+    tzhOS
+    tzh-Harness
+    tzh-agent-configs
+    tzh-evals
+    tzh-dotfiles
+    tzh-legal
+    tzh-marketing
+    guanghe
+    tzhOS-App
+    super-founder
+    hl-platform
+    hl-framework
+    hl-factory
+    hl-dispatch
+    hl-contracts
+    hl-console-native
+
+jobs:
+  collect-status:
+    runs-on: ubuntu-latest
+    outputs:
+      total: ${{ steps.aggregate.outputs.total }}
+      pass: ${{ steps.aggregate.outputs.pass }}
+      fail: ${{ steps.aggregate.outputs.fail }}
+      stale: ${{ steps.aggregate.outputs.stale }}
+    steps:
+      - name: Collect sentinel status from all repos
+        id: aggregate
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
+        run: |
+          PASS=0
+          FAIL=0
+          STALE=0
+          TOTAL=0
+          REPORT=""
+          NOW=$(date +%s)
+
+          for REPO in $DOWNSTREAM_REPOS; do
+            TOTAL=$((TOTAL + 1))
+            RUN_DATA=$(curl -s               -H "Authorization: token ${GH_TOKEN}"               -H "Accept: application/vnd.github+json"               "https://api.github.com/repos/huanlongAI/${REPO}/actions/runs?per_page=5&branch=main"               | jq '[.workflow_runs[] | select(.name == "Consistency Sentinel" or .path == ".github/workflows/consistency-sentinel.yml")] | .[0] // empty')
+
+            if [ -z "$RUN_DATA" ] || [ "$RUN_DATA" = "null" ]; then
+              REPORT="${REPORT}| ${REPO} | ⚪ no data | — | — |
+"
+              STALE=$((STALE + 1))
+              continue
+            fi
+
+            CONCLUSION=$(echo "$RUN_DATA" | jq -r '.conclusion // "pending"')
+            RUN_URL=$(echo "$RUN_DATA" | jq -r '.html_url // "N/A"')
+            UPDATED=$(echo "$RUN_DATA" | jq -r '.updated_at // ""')
+
+            if [ -n "$UPDATED" ]; then
+              RUN_TS=$(date -d "$UPDATED" +%s 2>/dev/null || echo 0)
+              AGE_H=$(( (NOW - RUN_TS) / 3600 ))
+              AGE_STR="${AGE_H}h ago"
+            else
+              AGE_STR="unknown"
+              AGE_H=999
+            fi
+
+            case "$CONCLUSION" in
+              success)
+                if [ "$AGE_H" -gt 48 ]; then
+                  REPORT="${REPORT}| ${REPO} | ⚠️ stale-pass | ${AGE_STR} | [Run](${RUN_URL}) |
+"
+                  STALE=$((STALE + 1))
+                else
+                  REPORT="${REPORT}| ${REPO} | ✅ pass | ${AGE_STR} | [Run](${RUN_URL}) |
+"
+                  PASS=$((PASS + 1))
+                fi
+                ;;
+              failure)
+                REPORT="${REPORT}| ${REPO} | ❌ fail | ${AGE_STR} | [Run](${RUN_URL}) |
+"
+                FAIL=$((FAIL + 1))
+                ;;
+              *)
+                REPORT="${REPORT}| ${REPO} | ⏳ ${CONCLUSION} | ${AGE_STR} | [Run](${RUN_URL}) |
+"
+                STALE=$((STALE + 1))
+                ;;
+            esac
+            sleep 0.2
+          done
+
+          echo "total=${TOTAL}" >> "$GITHUB_OUTPUT"
+          echo "pass=${PASS}" >> "$GITHUB_OUTPUT"
+          echo "fail=${FAIL}" >> "$GITHUB_OUTPUT"
+          echo "stale=${STALE}" >> "$GITHUB_OUTPUT"
+
+          printf "| Repo | Status | Last Run | Details |
+|------|--------|----------|--------|
+${REPORT}" > /tmp/dashboard-report.md
+
+          HEALTH_PCT=0
+          if [ "$TOTAL" -gt 0 ]; then
+            HEALTH_PCT=$(( PASS * 100 / TOTAL ))
+          fi
+
+          {
+            echo "## Sentinel Dashboard"
+            echo ""
+            echo "**Health**: ${HEALTH_PCT}% (${PASS}/${TOTAL} repos passing)"
+            echo "**Breakdown**: ${PASS} pass | ${FAIL} fail | ${STALE} stale/unknown"
+            echo "**Generated**: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo ""
+            cat /tmp/dashboard-report.md
+          } > /tmp/dashboard-summary.md
+
+      - name: Output dashboard to step summary
+        run: cat /tmp/dashboard-summary.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Create issue if health drops below threshold
+        if: steps.aggregate.outputs.fail != '0'
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
+        run: |
+          FAIL="${{ steps.aggregate.outputs.fail }}"
+          TOTAL="${{ steps.aggregate.outputs.total }}"
+          BODY=$(cat /tmp/dashboard-summary.md)
+
+          EXISTING=$(curl -s             -H "Authorization: token ${GH_TOKEN}"             -H "Accept: application/vnd.github+json"             "https://api.github.com/repos/huanlongAI/sentinel-shared/issues?state=open&labels=dashboard-alert&per_page=1"             | jq 'length')
+
+          if [ "$EXISTING" = "0" ]; then
+            curl -s -X POST               -H "Authorization: token ${GH_TOKEN}"               -H "Accept: application/vnd.github+json"               "https://api.github.com/repos/huanlongAI/sentinel-shared/issues"               -d "$(jq -n                 --arg title "Sentinel Dashboard: ${FAIL}/${TOTAL} repos failing"                 --arg body "$BODY"                 '{title: $title, body: $body, labels: ["dashboard-alert"]}')"
+            echo "Dashboard alert issue created"
+          else
+            echo "Dashboard alert issue already exists, skipping"
+          fi
