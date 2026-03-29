@@ -7,13 +7,19 @@ name: Matrix Auto-Update
 on:
   workflow_dispatch:
     inputs:
-      test_change:
-        description: 'Matrix change description for manual test'
-        required: false
-        default: 'Manual test'
+      ruling_id:
+        description: 'Ruling ID (e.g., R-0082)'
+        required: true
         type: string
-  repository_dispatch:
-    types: [matrix-update]
+      matrix_change_b64:
+        description: 'Base64-encoded matrix change description'
+        required: true
+        type: string
+      source_pr:
+        description: 'Source ruling PR URL'
+        required: false
+        default: 'N/A'
+        type: string
 
 permissions:
   contents: write
@@ -29,9 +35,9 @@ jobs:
       - name: Decode matrix change description
         id: decode
         run: |
-          RULING_ID="${{ github.event.client_payload.ruling_id }}"
-          MATRIX_CHANGE_B64="${{ github.event.client_payload.matrix_change_b64 }}"
-          SOURCE_PR="${{ github.event.client_payload.source_pr }}"
+          RULING_ID="${{ inputs.ruling_id }}"
+          MATRIX_CHANGE_B64="${{ inputs.matrix_change_b64 }}"
+          SOURCE_PR="${{ inputs.source_pr }}"
 
           MATRIX_CHANGE=$(echo "$MATRIX_CHANGE_B64" | base64 --decode 2>/dev/null || echo "Failed to decode")
 
@@ -92,8 +98,6 @@ Produce the complete updated sentinel-matrix.yaml with this change applied."
           else
             echo "draft_success=false" >> "$GITHUB_OUTPUT"
             echo "LLM draft failed or too short, creating issue instead"
-
-            # Save the change description for the fallback issue
             echo "$MATRIX_CHANGE" > /tmp/matrix_change_for_issue.txt
           fi
 
