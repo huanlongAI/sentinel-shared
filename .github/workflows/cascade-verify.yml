@@ -1,0 +1,192 @@
+# ============================================================================
+# Cascade Verification — sentinel-shared hub change → fan-out to all spokes
+# Triggers when precheck scripts or reusable workflow change
+# Uses CASCADE_TOKEN (PAT with repo scope) for cross-repo dispatch
+# ============================================================================
+name: Cascade Verification
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/**'
+      - '.github/workflows/consistency-sentinel.yml'
+      - 'matrix/**'
+      - 'profiles/**'
+      - 'prompts/**'
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual cascade trigger'
+        required: false
+        default: 'Manual verification'
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  DOWNSTREAM_REPOS: >-
+    tzhOS
+    tzh-Harness
+    tzh-agent-configs
+    tzh-evals
+    tzh-dotfiles
+    tzh-legal
+    tzh-marketing
+    guanghe
+    tzhOS-App
+    super-founder
+    hl-platform
+    hl-framework
+    hl-factory
+    hl-dispatch
+    hl-contracts
+    hl-console-native
+
+jobs:
+  fan-out:
+    runs-on: ubuntu-latest
+    outputs:
+      triggered: ${{ steps.dispatch.outputs.triggered }}
+      failed: ${{ steps.dispatch.outputs.failed }}
+    steps:
+      - name: Determine trigger context
+        id: context
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "reason=${{ inputs.reason }}" >> "$GITHUB_OUTPUT"
+          else
+            COMMIT_MSG=$(echo "${{ github.event.head_commit.message }}" | head -1)
+            echo "reason=Auto-cascade: ${COMMIT_MSG}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "trigger_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Fan-out repository_dispatch to all downstream repos
+        id: dispatch
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
+        run: |
+          TRIGGERED=""
+          FAILED=""
+
+          for REPO in $DOWNSTREAM_REPOS; do
+            echo "::group::Dispatching to ${REPO}"
+            RESULT=$(curl -s -o /dev/null -w "%{http_code}" \
+              -X POST \
+              -H "Authorization: token ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/huanlongAI/${REPO}/dispatches" \
+              -d "{\"event_type\":\"sentinel-cascade\",\"client_payload\":{\"source_sha\":\"${{ github.sha }}\",\"reason\":\"${{ steps.context.outputs.reason }}\"}}")
+
+            if [ "$RESULT" = "204" ]; then
+              echo "✅ ${REPO}: dispatched (HTTP ${RESULT})"
+              TRIGGERED="${TRIGGERED}${REPO},"
+            else
+              echo "❌ ${REPO}: failed (HTTP ${RESULT})"
+              FAILED="${FAILED}${REPO},"
+            fi
+            echo "::endgroup::"
+
+            # Rate limit: 100ms between dispatches
+            sleep 0.1
+          done
+
+          echo "triggered=${TRIGGERED}" >> "$GITHUB_OUTPUT"
+          echo "failed=${FAILED}" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$FAILED" ]; then
+            echo "::warning::Some dispatches failed: ${FAILED}"
+          fi
+
+  collect-results:
+    needs: fan-out
+    runs-on: ubuntu-latest
+    # Wait for downstream workflows to complete
+    if: always()
+    steps:
+      - name: Wait for downstream workflows
+        run: |
+          echo "Waiting 120s for downstream sentinel runs to start and complete..."
+          sleep 120
+
+      - name: Collect downstream results
+        id: results
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
+        run: |
+          PASS=0
+          FAIL=0
+          SKIP=0
+          REPORT=""
+          TRIGGER_TIME="${{ needs.fan-out.outputs.triggered && 'set' || 'unset' }}"
+
+          for REPO in $DOWNSTREAM_REPOS; do
+            # Get the most recent sentinel workflow run
+            RUN_DATA=$(curl -s \
+              -H "Authorization: token ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/huanlongAI/${REPO}/actions/runs?per_page=3&event=repository_dispatch" \
+              | jq -r '.workflow_runs[0] // empty')
+
+            if [ -z "$RUN_DATA" ]; then
+              REPORT="${REPORT}| ${REPO} | ⏭️ skip | No dispatch run found |\n"
+              SKIP=$((SKIP + 1))
+              continue
+            fi
+
+            CONCLUSION=$(echo "$RUN_DATA" | jq -r '.conclusion // "pending"')
+            RUN_URL=$(echo "$RUN_DATA" | jq -r '.html_url // "N/A"')
+
+            case "$CONCLUSION" in
+              success)
+                REPORT="${REPORT}| ${REPO} | ✅ pass | [Run](${RUN_URL}) |\n"
+                PASS=$((PASS + 1))
+                ;;
+              failure)
+                REPORT="${REPORT}| ${REPO} | ❌ fail | [Run](${RUN_URL}) |\n"
+                FAIL=$((FAIL + 1))
+                ;;
+              *)
+                REPORT="${REPORT}| ${REPO} | ⏳ ${CONCLUSION} | [Run](${RUN_URL}) |\n"
+                SKIP=$((SKIP + 1))
+                ;;
+            esac
+          done
+
+          echo "pass=${PASS}" >> "$GITHUB_OUTPUT"
+          echo "fail=${FAIL}" >> "$GITHUB_OUTPUT"
+          echo "skip=${SKIP}" >> "$GITHUB_OUTPUT"
+
+          # Write report to file for the issue body
+          printf "| Repo | Status | Details |\n|------|--------|--------|\n${REPORT}" > /tmp/cascade-report.md
+
+          TOTAL=$((PASS + FAIL + SKIP))
+          echo "## Cascade Verification Summary" > /tmp/cascade-summary.md
+          echo "" >> /tmp/cascade-summary.md
+          echo "**Trigger**: ${{ github.sha }} (${{ github.event_name }})" >> /tmp/cascade-summary.md
+          echo "**Results**: ${PASS}/${TOTAL} pass, ${FAIL} fail, ${SKIP} skip/pending" >> /tmp/cascade-summary.md
+          echo "" >> /tmp/cascade-summary.md
+          cat /tmp/cascade-report.md >> /tmp/cascade-summary.md
+
+      - name: Create issue if failures detected
+        if: steps.results.outputs.fail != '0'
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
+        run: |
+          BODY=$(cat /tmp/cascade-summary.md)
+          curl -s -X POST \
+            -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/huanlongAI/sentinel-shared/issues" \
+            -d "$(jq -n \
+              --arg title "🚨 Cascade Verification: ${{ steps.results.outputs.fail }} repo(s) failed" \
+              --arg body "$BODY" \
+              '{title: $title, body: $body, labels: ["cascade-failure"]}')"
+
+      - name: Output summary
+        run: |
+          echo "## Cascade Verification Results" >> $GITHUB_STEP_SUMMARY
+          cat /tmp/cascade-summary.md >> $GITHUB_STEP_SUMMARY
