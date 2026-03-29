@@ -3,6 +3,7 @@ set -euo pipefail
 
 # D-2: Terminology scan
 # Reads forbidden terms from .sentinel/config.yaml
+# Supports terminology_exclude_patterns to skip governance spec files
 
 CONFIG_FILE="${CONFIG_FILE:-.sentinel/config.yaml}"
 RESULTS_DIR="${RESULTS_DIR:-.sentinel/results}"
@@ -44,6 +45,34 @@ else
   echo "Read forbidden terms from config"
 fi
 
+# Read exclude patterns from config
+EXCLUDE_PATTERNS=$(yaml_get_array "$CONFIG_FILE" "terminology_exclude_patterns")
+if [ -n "$EXCLUDE_PATTERNS" ]; then
+  echo "Exclude patterns loaded: $(echo "$EXCLUDE_PATTERNS" | wc -l | tr -d ' ') patterns"
+fi
+
+# Function: check if a filename matches any exclude pattern
+should_exclude() {
+  local filepath="$1"
+  local basename
+  basename=$(basename "$filepath")
+  
+  if [ -z "$EXCLUDE_PATTERNS" ]; then
+    return 1  # no patterns = don't exclude
+  fi
+  
+  while IFS= read -r pattern; do
+    [ -z "$pattern" ] && continue
+    # Use bash pattern matching (supports * and ? globs)
+    # shellcheck disable=SC2254
+    case "$basename" in
+      $pattern) return 0 ;;  # match = exclude
+    esac
+  done <<< "$EXCLUDE_PATTERNS"
+  
+  return 1  # no match = don't exclude
+}
+
 # Initialize result
 PASSED=true
 ISSUES=()
@@ -62,11 +91,18 @@ if [ -z "$CHANGED_FILES" ]; then
   echo "No changed files found — PASS"
   PASSED=true
 else
-  echo "Scanning $(echo "$CHANGED_FILES" | wc -l | tr -d ' ') changed files"
+  FILE_COUNT=$(echo "$CHANGED_FILES" | wc -l | tr -d ' ')
+  echo "Scanning $FILE_COUNT changed files"
+  EXCLUDED_COUNT=0
   # Check each changed file for forbidden terms
   while IFS= read -r file; do
     [ -z "$file" ] && continue
     [ ! -f "$file" ] && continue
+    # Skip excluded files (governance specs that discuss forbidden terms)
+    if should_exclude "$file"; then
+      EXCLUDED_COUNT=$((EXCLUDED_COUNT + 1))
+      continue
+    fi
     # Skip binary files
     if file "$file" | grep -q "binary"; then
       continue
@@ -81,6 +117,9 @@ else
       fi
     done <<< "$FORBIDDEN_TERMS"
   done <<< "$CHANGED_FILES"
+  if [ $EXCLUDED_COUNT -gt 0 ]; then
+    echo "Excluded $EXCLUDED_COUNT files by terminology_exclude_patterns"
+  fi
 fi
 
 if [ "$PASSED" = false ]; then
