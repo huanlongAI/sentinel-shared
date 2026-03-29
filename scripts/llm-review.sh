@@ -3,7 +3,6 @@ set -euo pipefail
 
 # LLM Review Layer — Consistency Sentinel
 # Calls Claude API to perform semantic consistency checks
-# Reads config from .sentinel/config.yaml
 
 CONFIG_FILE="${CONFIG_FILE:-.sentinel/config.yaml}"
 RESULTS_DIR="${RESULTS_DIR:-.sentinel/results}"
@@ -11,7 +10,7 @@ SENTINEL_SHARED_DIR="${SENTINEL_SHARED_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")
 
 mkdir -p "$RESULTS_DIR"
 
-# YAML helpers
+# --- YAML helpers (no yq) ---
 yaml_get() {
   local file="$1" key="$2" default="${3:-}"
   local val=$(grep -E "^\s*${key}:" "$file" 2>/dev/null | head -1 | sed 's/^[^:]*:\s*//' | sed 's/\s*#.*//' | tr -d '"' | tr -d "'")
@@ -21,6 +20,34 @@ yaml_get() {
 yaml_get_array() {
   local file="$1" key="$2"
   sed -n "/^\s*${key}:/,/^\s*[a-z]/p" "$file" 2>/dev/null | { grep "^\s*-" || true; } | sed 's/^\s*-\s*//' | tr -d '"' | tr -d "'"
+}
+
+# Read a scalar value nested under a parent section
+# Usage: yaml_get_nested config.yaml "llm" "model" "default"
+yaml_get_nested() {
+  local file="$1" parent="$2" key="$3" default="${4:-}"
+  local val=$(sed -n "/^\s*${parent}:/,/^\S/p" "$file" 2>/dev/null | grep -E "^\s+${key}:" | head -1 | sed 's/^[^:]*:\s*//' | sed 's/\s*#.*//' | tr -d '"' | tr -d "'")
+  echo "${val:-$default}"
+}
+
+# Read an array nested under a parent section
+# Usage: yaml_get_nested_array config.yaml "llm" "checks"
+yaml_get_nested_array() {
+  local file="$1" parent="$2" key="$3"
+  # Extract parent section, then find child array
+  sed -n "/^\s*${parent}:/,/^\S/p" "$file" 2>/dev/null | \
+    sed -n "/^\s*${key}:/,/^\s*[a-z]/p" | \
+    { grep "^\s*-" || true; } | \
+    sed 's/^\s*-\s*//' | tr -d '"' | tr -d "'"
+}
+
+# Read key-value pairs under a section (for anchor_files)
+# Returns: key=value per line
+yaml_get_kv_pairs() {
+  local file="$1" section="$2"
+  sed -n "/^\s*${section}:/,/^\S/p" "$file" 2>/dev/null | \
+    { grep -E "^\s+\w+:" || true; } | \
+    sed 's/^\s*//' | sed 's/:\s*/=/' | tr -d '"' | tr -d "'"
 }
 
 echo "LLM Review Layer"
@@ -34,15 +61,11 @@ EOF
   exit 0
 fi
 
-# --- Read LLM configuration ---
-LLM_MODEL=$(yaml_get "$CONFIG_FILE" "model" "claude-opus-4-6")
-# Also check nested llm.model
-LLM_MODEL_NESTED=$(yaml_get "$CONFIG_FILE" "llm.model" "")
-[ -n "$LLM_MODEL_NESTED" ] && LLM_MODEL="$LLM_MODEL_NESTED"
-
-LLM_MAX_TOKENS=$(yaml_get "$CONFIG_FILE" "llm.max_output_tokens" "8192")
-LLM_CHECKS=$(yaml_get_array "$CONFIG_FILE" "llm.checks")
-CONFIDENCE_THRESHOLD=$(yaml_get "$CONFIG_FILE" "llm.confidence_threshold" "0.7")
+# --- Read LLM configuration (nested under llm:) ---
+LLM_MODEL=$(yaml_get_nested "$CONFIG_FILE" "llm" "model" "claude-opus-4-6")
+LLM_MAX_TOKENS=$(yaml_get_nested "$CONFIG_FILE" "llm" "max_output_tokens" "8192")
+LLM_CHECKS=$(yaml_get_nested_array "$CONFIG_FILE" "llm" "checks")
+CONFIDENCE_THRESHOLD=$(yaml_get_nested "$CONFIG_FILE" "llm" "confidence_threshold" "0.7")
 
 echo "Config: model=$LLM_MODEL max_tokens=$LLM_MAX_TOKENS threshold=$CONFIDENCE_THRESHOLD"
 
@@ -102,16 +125,12 @@ echo "Diff size: ${#DIFF_CONTENT} chars (truncated=$TRUNCATED)"
 
 # --- Build context pack from anchor files ---
 CONTEXT_PACK=""
-ANCHOR_FILES=$(yaml_get_array "$CONFIG_FILE" "anchor_files")
-if [ -n "$ANCHOR_FILES" ]; then
-  while IFS= read -r entry; do
-    [ -z "$entry" ] && continue
-    # entry might be "key: value" or just a filename
-    if [[ "$entry" == *":"* ]]; then
-      file_path=$(echo "$entry" | sed 's/^[^:]*:\s*//')
-    else
-      file_path="$entry"
-    fi
+ANCHOR_KV=$(yaml_get_kv_pairs "$CONFIG_FILE" "anchor_files")
+if [ -n "$ANCHOR_KV" ]; then
+  echo "Loading context pack:"
+  while IFS= read -r pair; do
+    [ -z "$pair" ] && continue
+    file_path=$(echo "$pair" | sed 's/^[^=]*=//')
     file_path=$(echo "$file_path" | tr -d ' ')
     if [ -f "$file_path" ]; then
       FILE_SIZE=$(wc -c < "$file_path" | tr -d ' ')
@@ -120,12 +139,14 @@ if [ -n "$ANCHOR_FILES" ]; then
 --- ${file_path} ---
 $(cat "$file_path")
 "
-        echo "  Loaded anchor: $file_path (${FILE_SIZE}B)"
+        echo "  Loaded: $file_path (${FILE_SIZE}B)"
       else
-        echo "  Skipped anchor: $file_path (too large: ${FILE_SIZE}B)"
+        echo "  Skipped: $file_path (too large: ${FILE_SIZE}B)"
       fi
+    else
+      echo "  Not found: $file_path"
     fi
-  done <<< "$ANCHOR_FILES"
+  done <<< "$ANCHOR_KV"
 fi
 
 # --- Build checks list for prompt ---
@@ -150,7 +171,7 @@ ${DIFF_CONTENT}
 ${CONTEXT_PACK:-No anchor files loaded.}
 
 ## Required Output Format
-Respond ONLY with a JSON object:
+Respond ONLY with a JSON object (no markdown wrapping):
 {
   \"verdict\": \"PASS\" | \"FAIL\" | \"ESCALATE\",
   \"checks\": {
@@ -166,7 +187,6 @@ Respond ONLY with a JSON object:
 # --- Call Claude API ---
 echo "Calling Claude API ($LLM_MODEL)..."
 
-# Escape strings for JSON
 SYSTEM_JSON=$(echo "$SYSTEM_PROMPT_CONTENT" | jq -Rsa .)
 USER_JSON=$(echo "$USER_MSG" | jq -Rsa .)
 
@@ -191,7 +211,6 @@ EOF
   exit 0
 fi
 
-# Check for API error
 API_ERROR=$(echo "$API_RESPONSE" | jq -r '.error.message // empty' 2>/dev/null || true)
 if [ -n "$API_ERROR" ]; then
   echo "::warning::Claude API error: $API_ERROR — ESCALATE"
@@ -201,46 +220,42 @@ EOF
   exit 0
 fi
 
-# Extract text content from API response
 RESPONSE_TEXT=$(echo "$API_RESPONSE" | jq -r '.content[0].text // empty' 2>/dev/null || true)
 if [ -z "$RESPONSE_TEXT" ]; then
-  echo "::warning::Could not extract text from API response — ESCALATE"
-  echo "Raw response (first 500 chars): ${API_RESPONSE:0:500}"
+  echo "::warning::No text in API response — ESCALATE"
+  echo "Raw (first 500): ${API_RESPONSE:0:500}"
   cat > "$RESULTS_DIR/llm-review.json" <<EOF
-{"review_id":"llm-review","status":"error","reason":"No text in response","passed":true,"escalate":true,"raw_response":"${API_RESPONSE:0:200}","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+{"review_id":"llm-review","status":"error","reason":"No text in response","passed":true,"escalate":true,"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
   exit 0
 fi
 
 echo "Response received (${#RESPONSE_TEXT} chars)"
 
-# Try to extract JSON from response (may be wrapped in markdown code blocks)
+# Extract JSON from response
 REVIEW_JSON=$(echo "$RESPONSE_TEXT" | sed -n '/^{/,/^}/p' || true)
 if [ -z "$REVIEW_JSON" ]; then
-  # Try extracting from ```json blocks
   REVIEW_JSON=$(echo "$RESPONSE_TEXT" | sed -n '/```json/,/```/p' | grep -v '```' || true)
 fi
 if [ -z "$REVIEW_JSON" ]; then
-  # Try extracting from ``` blocks
   REVIEW_JSON=$(echo "$RESPONSE_TEXT" | sed -n '/```/,/```/p' | grep -v '```' || true)
 fi
 
-# Validate JSON
+# Validate JSON and extract verdict
 VERDICT="ESCALATE"
 PASSED=true
 if echo "$REVIEW_JSON" | jq . >/dev/null 2>&1; then
   VERDICT=$(echo "$REVIEW_JSON" | jq -r '.verdict // "ESCALATE"')
+  SUMMARY=$(echo "$REVIEW_JSON" | jq -r '.summary // "No summary"')
   echo "LLM verdict: $VERDICT"
-
-  # Check individual results
+  echo "Summary: $SUMMARY"
   echo "$REVIEW_JSON" | jq -r '.checks // {} | to_entries[] | "  \(.key): \(.value.verdict) (confidence: \(.value.confidence // "N/A"))"' 2>/dev/null || true
 
   if [ "$VERDICT" = "FAIL" ]; then
     PASSED=false
   fi
 else
-  echo "::warning::Could not parse LLM response as JSON — ESCALATE"
-  VERDICT="ESCALATE"
+  echo "::warning::Could not parse LLM JSON — ESCALATE"
   REVIEW_JSON="{}"
 fi
 
