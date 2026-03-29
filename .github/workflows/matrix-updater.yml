@@ -75,7 +75,7 @@ jobs:
       - name: Create PR with matrix update
         if: steps.draft.outputs.draft_success == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
           RULING_ID: ${{ steps.decode.outputs.ruling_id }}
           SOURCE_PR: ${{ steps.decode.outputs.source_pr }}
         run: |
@@ -96,7 +96,7 @@ jobs:
       - name: Create issue if LLM draft failed
         if: steps.draft.outputs.draft_success == 'false'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
           RULING_ID: ${{ steps.decode.outputs.ruling_id }}
           SOURCE_PR: ${{ steps.decode.outputs.source_pr }}
         run: |
