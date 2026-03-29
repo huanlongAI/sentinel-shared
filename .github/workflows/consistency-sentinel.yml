@@ -1,6 +1,6 @@
 # ============================================================================
 # Consistency Sentinel — Reusable Workflow
-# 共享于 huanlongAI/.sentinel-shared
+# 共享于 huanlongAI/sentinel-shared
 # CONSEN-SPEC-001 v1.1 Phase 1
 # ============================================================================
 name: Consistency Sentinel
@@ -38,7 +38,7 @@ jobs:
       - name: Checkout shared scripts
         uses: actions/checkout@v4
         with:
-          repository: huanlongAI/.sentinel-shared
+          repository: huanlongAI/sentinel-shared
           path: .sentinel-shared
           token: ${{ github.token }}
 
