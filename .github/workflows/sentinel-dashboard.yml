@@ -1,5 +1,5 @@
 # ============================================================================
-# Sentinel Status Dashboard — Phase 2 WP-9
+# Sentinel Status Dashboard - Phase 2 WP-9
 # Aggregates sentinel health across all downstream repos
 # Runs on schedule + manual trigger, outputs to GITHUB_STEP_SUMMARY
 # ============================================================================
@@ -65,7 +65,7 @@ jobs:
             RUN_DATA=$(curl -s               -H "Authorization: token ${GH_TOKEN}"               -H "Accept: application/vnd.github+json"               "https://api.github.com/repos/huanlongAI/${REPO}/actions/runs?per_page=5&branch=main"               | jq '[.workflow_runs[] | select(.name == "Consistency Sentinel" or .path == ".github/workflows/consistency-sentinel.yml")] | .[0] // empty')
 
             if [ -z "$RUN_DATA" ] || [ "$RUN_DATA" = "null" ]; then
-              REPORT="${REPORT}| ${REPO} | ⚪ no data | — | — |
+              REPORT="${REPORT}| ${REPO} | [--] no data | - | - |
 "
               STALE=$((STALE + 1))
               continue
@@ -87,22 +87,22 @@ jobs:
             case "$CONCLUSION" in
               success)
                 if [ "$AGE_H" -gt 48 ]; then
-                  REPORT="${REPORT}| ${REPO} | ⚠️ stale-pass | ${AGE_STR} | [Run](${RUN_URL}) |
+                  REPORT="${REPORT}| ${REPO} | [!!] stale-pass | ${AGE_STR} | [Run](${RUN_URL}) |
 "
                   STALE=$((STALE + 1))
                 else
-                  REPORT="${REPORT}| ${REPO} | ✅ pass | ${AGE_STR} | [Run](${RUN_URL}) |
+                  REPORT="${REPORT}| ${REPO} | [OK] pass | ${AGE_STR} | [Run](${RUN_URL}) |
 "
                   PASS=$((PASS + 1))
                 fi
                 ;;
               failure)
-                REPORT="${REPORT}| ${REPO} | ❌ fail | ${AGE_STR} | [Run](${RUN_URL}) |
+                REPORT="${REPORT}| ${REPO} | [FAIL] fail | ${AGE_STR} | [Run](${RUN_URL}) |
 "
                 FAIL=$((FAIL + 1))
                 ;;
               *)
-                REPORT="${REPORT}| ${REPO} | ⏳ ${CONCLUSION} | ${AGE_STR} | [Run](${RUN_URL}) |
+                REPORT="${REPORT}| ${REPO} | [..] ${CONCLUSION} | ${AGE_STR} | [Run](${RUN_URL}) |
 "
                 STALE=$((STALE + 1))
                 ;;
@@ -155,4 +155,4 @@ ${REPORT}" > /tmp/dashboard-report.md
             echo "Dashboard alert issue already exists, skipping"
           fi
 
-# Sentinel Phase 2 WP-9 — deployed 2026-03-29
+# Sentinel Phase 2 WP-9 - deployed 2026-03-29
