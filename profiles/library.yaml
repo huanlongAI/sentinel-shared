@@ -1,0 +1,10 @@
+# Sentinel Profile: library repos (guanghe, hl-framework)
+repo_type: library
+enabled_dimensions:
+  - software_engineering
+  - governance_process
+# DBC enabled only for guanghe (design system itself)
+# SAC not enabled — libraries don't have strategic alignment checks
+
+anchor_files:
+  rulings: "RULINGS.md"

@@ -1,0 +1,155 @@
+# ============================================================================
+# Consistency Sentinel — Reusable Workflow
+# 共享于 huanlongAI/.sentinel-shared
+# CONSEN-SPEC-001 v1.1 Phase 1
+# ============================================================================
+name: Consistency Sentinel
+
+on:
+  workflow_call:
+    inputs:
+      skip_llm:
+        description: '跳过 LLM 审查层（仅运行确定性预检）'
+        required: false
+        default: 'false'
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  SENTINEL_RESULTS_DIR: .sentinel/results
+
+jobs:
+  sentinel:
+    name: 一致性检查
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout calling repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout shared scripts
+        uses: actions/checkout@v4
+        with:
+          repository: huanlongAI/.sentinel-shared
+          path: .sentinel-shared
+          token: ${{ github.token }}
+
+      - name: 环境准备
+        run: |
+          mkdir -p "$SENTINEL_RESULTS_DIR"
+          chmod +x .sentinel-shared/scripts/*.sh
+          # Export PR env vars
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "BASE_REF=${{ github.event.pull_request.base.ref }}" >> $GITHUB_ENV
+            echo "HEAD_SHA=${{ github.event.pull_request.head.sha }}" >> $GITHUB_ENV
+            echo "PR_NUMBER=${{ github.event.pull_request.number }}" >> $GITHUB_ENV
+          fi
+          # Export shared dir for scripts
+          echo "SENTINEL_SHARED_DIR=.sentinel-shared" >> $GITHUB_ENV
+
+      # ---- 确定性预检层 ----
+      - name: "D-1: CHANGELOG 留痕检查"
+        run: .sentinel-shared/scripts/precheck-changelog.sh
+
+      - name: "D-2: 术语 SSOT 扫描"
+        run: .sentinel-shared/scripts/precheck-terminology.sh
+
+      - name: "D-3: 级联引用完整性"
+        run: .sentinel-shared/scripts/precheck-cascade.sh
+
+      # D-4~D-6 are Phase 1 additions, scripts will PASS/SKIP if not applicable
+      - name: "D-4: 目录规范对齐"
+        if: hashFiles('.sentinel-shared/scripts/precheck-directory.sh') != ''
+        run: .sentinel-shared/scripts/precheck-directory.sh
+        continue-on-error: true
+
+      - name: "D-5: 能力来源标注扫描"
+        if: hashFiles('.sentinel-shared/scripts/precheck-capability-source.sh') != ''
+        run: .sentinel-shared/scripts/precheck-capability-source.sh
+        continue-on-error: true
+
+      - name: "D-6: Brand Token 硬编码检测"
+        if: hashFiles('.sentinel-shared/scripts/precheck-brand-token.sh') != ''
+        run: .sentinel-shared/scripts/precheck-brand-token.sh
+        continue-on-error: true
+
+      # ---- LLM 一致性审查层 ----
+      - name: "LLM: 语义一致性审查"
+        if: inputs.skip_llm != 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: .sentinel-shared/scripts/llm-review.sh
+
+      # ---- 判定聚合 ----
+      - name: "聚合判定 & 生成报告"
+        id: aggregate
+        if: always()
+        run: .sentinel-shared/scripts/aggregate.sh
+
+      # ---- PR Comment ----
+      - name: "发布报告到 PR"
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const reportPath = process.env.SENTINEL_RESULTS_DIR + '/sentinel-report.md';
+            let body = '### Consistency Sentinel\n\n报告生成失败，请查看 Actions 日志。';
+            try {
+              body = fs.readFileSync(reportPath, 'utf8');
+            } catch (e) {
+              console.log('Report file not found:', e.message);
+            }
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const sentinel_comment = comments.find(c =>
+              c.body.includes('Consistency Sentinel') && c.user.type === 'Bot'
+            );
+            if (sentinel_comment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: sentinel_comment.id,
+                body: body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body,
+              });
+            }
+
+      # ---- ESCALATE / FAIL Issue ----
+      - name: "创建 Escalation Issue（如需要）"
+        if: always() && (steps.aggregate.outputs.gate_result == 'FAIL' || steps.aggregate.outputs.gate_result == 'ESCALATE')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || 'N/A' }}
+        run: .sentinel-shared/scripts/escalate.sh
+
+      # ---- 审计日志 ----
+      - name: "归档审计日志"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sentinel-audit-${{ github.run_id }}
+          path: ${{ env.SENTINEL_RESULTS_DIR }}/
+          retention-days: 90
+
+      # ---- Cleanup ----
+      - name: "清理共享脚本目录"
+        if: always()
+        run: rm -rf .sentinel-shared

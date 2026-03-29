@@ -1,0 +1,221 @@
+# Consistency Sentinel — 活文件检查矩阵
+# SSOT for all check items, sourced from CONSEN-SPEC-001 §2
+# Changes to this file are PolicyChange — require L0 approval
+version: "1.0"
+
+dimensions:
+  software_engineering:
+    id: SEC
+    name: "软件工程一致性"
+    checks:
+      - id: SEC-001
+        name: "SSOT 违反检测"
+        severity: P0
+        method: deterministic
+        source: "R-0060"
+        trigger: "配置/文档变更"
+        phase: 1
+
+      - id: SEC-002
+        name: "契约一致性"
+        severity: P0
+        method: llm
+        source: "SAAC-001 §2.4 / §6.3"
+        trigger: "L5 契约文件变更"
+        phase: 1
+
+      - id: SEC-003
+        name: "环境同构"
+        severity: P1
+        method: deterministic
+        precheck_id: D-4
+        source: "R-0061 / DIRECTORY-SPEC"
+        trigger: "目录结构/环境配置变更"
+        phase: 1
+
+      - id: SEC-004
+        name: "依赖管理三层一致"
+        severity: P1
+        method: deterministic_plus_llm
+        source: "R-0077"
+        trigger: "Package.swift / build.gradle / pyproject.toml 变更"
+        phase: 1
+
+      - id: SEC-005
+        name: "术语一致性"
+        severity: P1
+        method: deterministic
+        precheck_id: D-2
+        source: "R-033 / terminology-ssot.md"
+        trigger: "源码/文档变更"
+        phase: 0
+
+      - id: SEC-006
+        name: "门禁声明一致"
+        severity: P1
+        method: llm
+        source: "Harness P4 / interface-standard"
+        trigger: "新文件创建"
+        phase: 1
+
+  governance_process:
+    id: GPC
+    name: "治理流程一致性"
+    checks:
+      - id: GPC-001
+        name: "决策闸口跳级"
+        severity: P0
+        method: llm
+        source: "decision-gate"
+        trigger: "架构/选型/原则变更"
+        phase: 1
+
+      - id: GPC-002
+        name: "级联更新缺失"
+        severity: P0
+        method: deterministic
+        precheck_id: D-3
+        source: "REPO-MAP §2.3"
+        trigger: "治理文件变更"
+        phase: 0
+
+      - id: GPC-003
+        name: "Ruling 矛盾"
+        severity: P0
+        method: llm
+        source: "governance.md §3.2"
+        trigger: "所有变更"
+        phase: 0
+
+      - id: GPC-004
+        name: "变更联动缺失"
+        severity: P1
+        method: deterministic_plus_llm
+        source: "R-0077"
+        trigger: "跨仓库影响变更"
+        phase: 2
+
+      - id: GPC-005
+        name: "CHANGELOG 留痕"
+        severity: P1
+        method: deterministic
+        precheck_id: D-1
+        source: "claude-gate"
+        trigger: "生效文件变更"
+        phase: 0
+
+      - id: GPC-006
+        name: "ADR 缺失"
+        severity: P1
+        method: llm
+        source: "governance.md §5.3"
+        trigger: "Mission/架构/Gate 逻辑/破坏性变更"
+        phase: 1
+
+  design_brand:
+    id: DBC
+    name: "设计与品牌一致性"
+    checks:
+      - id: DBC-001
+        name: "Brand Token 硬编码检测"
+        severity: P1
+        method: deterministic
+        precheck_id: D-6
+        source: "GHR 集成协议 / SAAC §6.2 L1"
+        trigger: "SwiftUI/CSS/样式文件变更"
+        depends_on: "guanghe/INTEGRATION-PROTOCOL.md"
+        phase: 1
+
+      - id: DBC-002
+        name: "设计系统集成合规"
+        severity: P1
+        method: llm
+        source: "guanghe/INTEGRATION-PROTOCOL.md (GHR-011)"
+        trigger: "新 UI 组件文件创建"
+        depends_on: "guanghe/INTEGRATION-PROTOCOL.md"
+        phase: 1
+
+  strategic_alignment:
+    id: SAC
+    name: "事业路线一致性"
+    checks:
+      - id: SAC-001
+        name: "架构分层合规"
+        severity: P0
+        method: llm
+        source: "SAAC-001 §6"
+        trigger: "新模块创建或架构文件变更"
+        phase: 1
+
+      - id: SAC-002
+        name: "桥梁层越权"
+        severity: P0
+        method: llm
+        source: "SAAC-001 §9.1"
+        trigger: "L6 相关文件变更"
+        phase: 1
+
+      - id: SAC-003
+        name: "能力来源标注"
+        severity: P1
+        method: deterministic
+        precheck_id: D-5
+        source: "SAAC-P7"
+        trigger: "架构文档/技术选型文件变更"
+        phase: 1
+
+      - id: SAC-004
+        name: "INV 不变量违反"
+        severity: P0
+        method: llm
+        source: "CONTEXT.md §2"
+        trigger: "所有变更"
+        phase: 0
+
+# Precheck mapping (deterministic layer)
+prechecks:
+  D-1:
+    script: precheck-changelog.sh
+    check_ids: [GPC-005]
+    description: "CHANGELOG 留痕检查"
+  D-2:
+    script: precheck-terminology.sh
+    check_ids: [SEC-005]
+    description: "术语 SSOT 扫描"
+  D-3:
+    script: precheck-cascade.sh
+    check_ids: [GPC-002]
+    description: "级联引用完整性"
+  D-4:
+    script: precheck-directory.sh
+    check_ids: [SEC-003]
+    description: "目录规范对齐"
+  D-5:
+    script: precheck-capability-source.sh
+    check_ids: [SAC-003]
+    description: "能力来源标注扫描"
+  D-6:
+    script: precheck-brand-token.sh
+    check_ids: [DBC-001]
+    description: "Brand Token 硬编码检测"
+
+# LLM configuration
+llm:
+  model: "claude-opus-4-6"
+  max_context_tokens: 100000
+  max_output_tokens: 8192
+  confidence_threshold: 0.7
+  # LLM checks are those with method: llm or deterministic_plus_llm
+  # Dynamically loaded from dimensions above based on repo profile
+
+# Severity definitions
+severity:
+  P0:
+    label: "硬约束违反"
+    gate_action: FAIL
+  P1:
+    label: "一致性风险"
+    gate_action: WARN
+  P2:
+    label: "建议性改进"
+    gate_action: INFO

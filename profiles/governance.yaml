@@ -1,0 +1,14 @@
+# Sentinel Profile: governance repos (tzhOS, tzh-Harness, hl-contracts)
+repo_type: governance
+enabled_dimensions:
+  - software_engineering
+  - governance_process
+  - strategic_alignment
+# DBC not enabled — no UI files in governance repos
+
+anchor_files:
+  rulings: "RULINGS.md"
+  saac: "SAAC-001.md"
+  mira: "MIRA-001.md"
+  context: "CONTEXT.md"
+  charter: "00-CHARTER.md"

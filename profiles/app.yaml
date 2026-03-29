@@ -1,0 +1,13 @@
+# Sentinel Profile: app repos (tzhOS-App, super-founder, hl-platform, hl-console-native)
+repo_type: app
+enabled_dimensions:
+  - software_engineering
+  - governance_process
+  - design_brand
+  - strategic_alignment
+
+anchor_files:
+  rulings: "RULINGS.md"
+  saac: "SAAC-001.md"
+  context: "CONTEXT.md"
+  integration_protocol: "INTEGRATION-PROTOCOL.md"
