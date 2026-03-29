@@ -58,6 +58,18 @@ dimensions:
         trigger: "新文件创建"
         phase: 1
 
+      # Added per Ruling E2E-TOKEN-VERIFY
+      # UNCERTAIN: Ruling does not specify severity, method, source, trigger, or phase for this check.
+      # Defaulting to reasonable values; confirm with governance owner.
+      - id: SEC-007
+        name: "细粒度 PAT 与 ANTHROPIC_API_KEY 有效性验证"
+        severity: P1
+        method: deterministic
+        precheck_id: D-7
+        source: "Ruling E2E-TOKEN-VERIFY"
+        trigger: "CI/CD 密钥配置变更 / org secret 变更"
+        phase: 1
+
   governance_process:
     id: GPC
     name: "治理流程一致性"
@@ -198,6 +210,12 @@ prechecks:
     script: precheck-brand-token.sh
     check_ids: [DBC-001]
     description: "Brand Token 硬编码检测"
+  # Added per Ruling E2E-TOKEN-VERIFY
+  # UNCERTAIN: Script name is inferred; confirm actual script path with DevOps owner.
+  D-7:
+    script: precheck-token-verify.sh
+    check_ids: [SEC-007]
+    description: "细粒度 PAT 与 org ANTHROPIC_API_KEY 端到端有效性验证"
 
 # LLM configuration
 llm:
