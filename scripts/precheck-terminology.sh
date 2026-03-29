@@ -7,17 +7,15 @@ set -euo pipefail
 CONFIG_FILE="${CONFIG_FILE:-.sentinel/config.yaml}"
 RESULTS_DIR="${RESULTS_DIR:-.sentinel/results}"
 
-# Ensure results directory exists
 mkdir -p "$RESULTS_DIR"
 
-# YAML value reader (no yq dependency)
+# YAML helpers (no yq dependency)
 yaml_get() {
   local file="$1" key="$2" default="${3:-}"
   local val=$(grep -E "^\s*${key}:" "$file" 2>/dev/null | head -1 | sed 's/^[^:]*:\s*//' | sed 's/\s*#.*//' | tr -d '"' | tr -d "'")
   echo "${val:-$default}"
 }
 
-# YAML array reader
 yaml_get_array() {
   local file="$1" key="$2"
   sed -n "/^\s*${key}:/,/^\s*[a-z]/p" "$file" 2>/dev/null | { grep "^\s*-" || true; } | sed 's/^\s*-\s*//' | tr -d '"' | tr -d "'"
@@ -30,7 +28,7 @@ FORBIDDEN_TERMS=$(yaml_get_array "$CONFIG_FILE" "forbidden_terms")
 
 # Use defaults if not configured
 if [ -z "$FORBIDDEN_TERMS" ]; then
-  FORBIDDEN_TERMS=$(cat <<'EOF'
+  FORBIDDEN_TERMS=$(cat <<'TERMS'
 TODO
 FIXME
 HACK
@@ -39,7 +37,7 @@ BUG
 TEMP
 DEPRECATED
 UNUSED
-EOF
+TERMS
 )
   echo "Using default forbidden terms"
 else
@@ -51,33 +49,38 @@ PASSED=true
 ISSUES=()
 VIOLATIONS=()
 
-# Get staged files
-STAGED_FILES=$(git diff --cached --name-only 2>/dev/null || echo "")
+# Detect changed files: PR diff or push commit diff
+if [ -n "${BASE_REF:-}" ]; then
+  CHANGED_FILES=$(git diff --name-only "origin/${BASE_REF}...HEAD" 2>/dev/null || echo "")
+elif git rev-parse HEAD~1 >/dev/null 2>&1; then
+  CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+else
+  CHANGED_FILES=$(git diff --cached --name-only 2>/dev/null || echo "")
+fi
 
-if [ -z "$STAGED_FILES" ]; then
-  echo "No staged files found"
+if [ -z "$CHANGED_FILES" ]; then
+  echo "No changed files found — PASS"
   PASSED=true
 else
-  # Check each staged file for forbidden terms
+  echo "Scanning $(echo "$CHANGED_FILES" | wc -l | tr -d ' ') changed files"
+  # Check each changed file for forbidden terms
   while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    [ ! -f "$file" ] && continue
     # Skip binary files
     if file "$file" | grep -q "binary"; then
       continue
     fi
-
     # Check each forbidden term
     while IFS= read -r term; do
       [ -z "$term" ] && continue
-
-      # Search for term in the file (case insensitive)
-      if grep -in "$term" "$file" > /dev/null 2>&1; then
-        # Get line numbers and context
-        matches=$(grep -in "$term" "$file" | head -5)
+      # Search for term in the file (case insensitive, whole word)
+      if grep -inw "$term" "$file" > /dev/null 2>&1; then
         VIOLATIONS+=("$file: contains forbidden term '$term'")
         PASSED=false
       fi
     done <<< "$FORBIDDEN_TERMS"
-  done <<< "$STAGED_FILES"
+  done <<< "$CHANGED_FILES"
 fi
 
 if [ "$PASSED" = false ]; then
