@@ -1,36 +1,56 @@
-name: Sentinel Dashboard
+name: Sentinel Dashboard v2
+
 on:
   workflow_dispatch:
     inputs:
       verbose:
-        description: Show detailed per-check results
+        description: "Show detailed per-check results (true/false)"
         required: false
-        default: 'false'
-        type: boolean
+        default: "false"
+        type: string
   schedule:
     - cron: '0 8 * * *'
+
 permissions:
   contents: read
   issues: write
+  actions: write
+
 env:
   DOWNSTREAM_REPOS: >-
     tzhOS tzh-Harness tzh-agent-configs tzh-evals tzh-dotfiles
     tzh-legal tzh-marketing guanghe tzhOS-App super-founder
     hl-platform hl-framework hl-factory hl-dispatch hl-contracts hl-console-native
+
 jobs:
   collect-status:
     runs-on: ubuntu-latest
+    outputs:
+      total: ${{ steps.agg.outputs.total }}
+      pass: ${{ steps.agg.outputs.pass }}
+      fail: ${{ steps.agg.outputs.fail }}
+      stale: ${{ steps.agg.outputs.stale }}
+      nudged: ${{ steps.agg.outputs.nudged }}
+      current_failing: ${{ steps.agg.outputs.current_failing }}
+      current_passing: ${{ steps.agg.outputs.current_passing }}
+      autofix_targets: ${{ steps.agg.outputs.autofix_targets }}
+      check_matrix_json: ${{ steps.agg.outputs.check_matrix_json }}
     steps:
-      - name: Collect sentinel status
+      - name: Collect sentinel status with per-check detail
         id: agg
         env:
           GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
+          VERBOSE: ${{ inputs.verbose || 'false' }}
         run: |
           PASS=0; FAIL=0; STALE=0; TOTAL=0; NUDGED=""; NOW=$(date +%s)
           REPORT=""; CURRENT_FAILING=""; CURRENT_PASSING=""
+          AUTOFIX_TARGETS=""
+          CHECK_MATRIX="[]"
 
           for REPO in $DOWNSTREAM_REPOS; do
             TOTAL=$((TOTAL + 1))
+
+            # Fetch latest sentinel run
             RUN_DATA=$(curl -s \
               -H "Authorization: token ${GH_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
@@ -38,12 +58,13 @@ jobs:
               | jq '[.workflow_runs[] | select(.name == "Consistency Sentinel" or .path == ".github/workflows/consistency-sentinel.yml")] | .[0] // empty')
 
             if [ -z "$RUN_DATA" ] || [ "$RUN_DATA" = "null" ]; then
-              REPORT="${REPORT}| ${REPO} | -- no data | - | - |\n"
+              REPORT="${REPORT}| ${REPO} | -- no data | - | - | - |\n"
               STALE=$((STALE + 1)); continue
             fi
 
             CONCLUSION=$(echo "$RUN_DATA" | jq -r '.conclusion // "pending"')
             RUN_URL=$(echo "$RUN_DATA" | jq -r '.html_url // "N/A"')
+            RUN_ID=$(echo "$RUN_DATA" | jq -r '.id // ""')
             UPDATED=$(echo "$RUN_DATA" | jq -r '.updated_at // ""')
 
             if [ -n "$UPDATED" ]; then
@@ -53,12 +74,38 @@ jobs:
               AGE_STR="unknown"; AGE_H=999
             fi
 
+            # --- Per-check detail: fetch job logs for check-level breakdown ---
+            CHECK_DETAIL="-"
+            FAILED_CHECKS=""
+            if [ -n "$RUN_ID" ] && [ "$CONCLUSION" = "failure" -o "$VERBOSE" = "true" ]; then
+              # Fetch STEP_SUMMARY from the run's jobs
+              JOBS_DATA=$(curl -s \
+                -H "Authorization: token ${GH_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/huanlongAI/${REPO}/actions/runs/${RUN_ID}/jobs?per_page=10")
+
+              # Try to extract check results from job step names
+              STEP_NAMES=$(echo "$JOBS_DATA" | jq -r '.jobs[].steps[]? | select(.conclusion == "failure") | .name' 2>/dev/null || true)
+              if [ -n "$STEP_NAMES" ]; then
+                FAILED_CHECKS=$(echo "$STEP_NAMES" | grep -oE 'D-[0-9]+' | sort -u | tr '\n' ',' | sed 's/,$//')
+                CHECK_DETAIL="FAIL: ${FAILED_CHECKS}"
+              fi
+
+              # Detect auto-fixable checks (D-2, D-6)
+              if echo "$FAILED_CHECKS" | grep -qE 'D-2'; then
+                AUTOFIX_TARGETS="${AUTOFIX_TARGETS}${REPO}:D-2,"
+              fi
+              if echo "$FAILED_CHECKS" | grep -qE 'D-6'; then
+                AUTOFIX_TARGETS="${AUTOFIX_TARGETS}${REPO}:D-6,"
+              fi
+            fi
+
             case "$CONCLUSION" in
               success)
                 if [ "$AGE_H" -gt 48 ]; then
-                  REPORT="${REPORT}| ${REPO} | STALE | ${AGE_STR} | [Run](${RUN_URL}) |\n"
+                  REPORT="${REPORT}| ${REPO} | STALE | ${AGE_STR} | [Run](${RUN_URL}) | ${CHECK_DETAIL} |\n"
                   STALE=$((STALE + 1))
-                  # --- Stale Nudge: re-trigger if >72h ---
+                  # Stale nudge: re-trigger if >72h
                   if [ "$AGE_H" -gt 72 ]; then
                     NUDGE_RESULT=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
                       -H "Authorization: token ${GH_TOKEN}" \
@@ -70,16 +117,16 @@ jobs:
                     fi
                   fi
                 else
-                  REPORT="${REPORT}| ${REPO} | PASS | ${AGE_STR} | [Run](${RUN_URL}) |\n"
+                  REPORT="${REPORT}| ${REPO} | PASS | ${AGE_STR} | [Run](${RUN_URL}) | ${CHECK_DETAIL} |\n"
                   PASS=$((PASS + 1))
                   CURRENT_PASSING="${CURRENT_PASSING}${REPO},"
                 fi ;;
               failure)
-                REPORT="${REPORT}| ${REPO} | FAIL | ${AGE_STR} | [Run](${RUN_URL}) |\n"
+                REPORT="${REPORT}| ${REPO} | FAIL | ${AGE_STR} | [Run](${RUN_URL}) | ${CHECK_DETAIL} |\n"
                 FAIL=$((FAIL + 1))
                 CURRENT_FAILING="${CURRENT_FAILING}${REPO}," ;;
               *)
-                REPORT="${REPORT}| ${REPO} | ${CONCLUSION} | ${AGE_STR} | [Run](${RUN_URL}) |\n"
+                REPORT="${REPORT}| ${REPO} | ${CONCLUSION} | ${AGE_STR} | [Run](${RUN_URL}) | ${CHECK_DETAIL} |\n"
                 STALE=$((STALE + 1)) ;;
             esac
             sleep 0.2
@@ -92,13 +139,28 @@ jobs:
           echo "nudged=${NUDGED}" >> "$GITHUB_OUTPUT"
           echo "current_failing=${CURRENT_FAILING}" >> "$GITHUB_OUTPUT"
           echo "current_passing=${CURRENT_PASSING}" >> "$GITHUB_OUTPUT"
+          echo "autofix_targets=${AUTOFIX_TARGETS}" >> "$GITHUB_OUTPUT"
 
-          printf "| Repo | Status | Last Run | Details |\n|------|--------|----------|--------|\n${REPORT}" > /tmp/report.md
+          # Build per-check matrix JSON for downstream auto-fix job
+          MATRIX_JSON="["
+          IFS=',' read -ra TARGETS <<< "$AUTOFIX_TARGETS"
+          for t in "${TARGETS[@]}"; do
+            [ -z "$t" ] && continue
+            REPO_NAME=$(echo "$t" | cut -d: -f1)
+            CHECK_ID=$(echo "$t" | cut -d: -f2)
+            MATRIX_JSON="${MATRIX_JSON}{\"repo\":\"${REPO_NAME}\",\"check\":\"${CHECK_ID}\"},"
+          done
+          MATRIX_JSON="${MATRIX_JSON%,}]"
+          echo "check_matrix_json=${MATRIX_JSON}" >> "$GITHUB_OUTPUT"
+
+          # Build full report markdown
+          printf "| Repo | Status | Last Run | Details | Checks |\n|------|--------|----------|---------|--------|\n${REPORT}" > /tmp/report.md
 
           HEALTH_PCT=0
           if [ "$TOTAL" -gt 0 ]; then HEALTH_PCT=$(( PASS * 100 / TOTAL )); fi
+
           {
-            echo "## Sentinel Dashboard"
+            echo "## Sentinel Dashboard v2"
             echo ""
             echo "Health: ${HEALTH_PCT}% (${PASS}/${TOTAL} repos passing)"
             echo "Breakdown: ${PASS} pass / ${FAIL} fail / ${STALE} stale"
@@ -119,7 +181,6 @@ jobs:
             "https://api.github.com/repos/huanlongAI/sentinel-shared/issues?state=all&labels=dashboard-report&per_page=1&sort=created&direction=desc" \
             | jq -r '.[0].body // ""')
 
-          # Extract previously failing repos from the last report
           PREV_FAILING=""
           if [ -n "$PREV_BODY" ]; then
             PREV_FAILING=$(echo "$PREV_BODY" | grep "| FAIL |" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}' | tr '\n' ',' || true)
@@ -128,7 +189,7 @@ jobs:
           CURRENT_FAILING="${{ steps.agg.outputs.current_failing }}"
           CURRENT_PASSING="${{ steps.agg.outputs.current_passing }}"
 
-          # Compute new failures (in current but not in previous)
+          # New failures
           NEW_FAILURES=""
           IFS=',' read -ra CUR_FAIL_ARR <<< "$CURRENT_FAILING"
           for repo in "${CUR_FAIL_ARR[@]}"; do
@@ -138,7 +199,7 @@ jobs:
             fi
           done
 
-          # Compute recovered (in previous failing but now passing)
+          # Recovered
           RECOVERED=""
           IFS=',' read -ra PREV_FAIL_ARR <<< "$PREV_FAILING"
           for repo in "${PREV_FAIL_ARR[@]}"; do
@@ -148,7 +209,7 @@ jobs:
             fi
           done
 
-          # Compute persistent failures (in both previous and current)
+          # Persistent
           PERSISTENT=""
           for repo in "${CUR_FAIL_ARR[@]}"; do
             [ -z "$repo" ] && continue
@@ -158,8 +219,8 @@ jobs:
           done
 
           NUDGED="${{ steps.agg.outputs.nudged }}"
+          AUTOFIX="${{ steps.agg.outputs.autofix_targets }}"
 
-          # Append trend section to summary
           {
             echo ""
             echo "### Trend"
@@ -180,10 +241,61 @@ jobs:
               echo "### Auto-Nudge"
               echo "Triggered re-run on: ${NUDGED%,*} (stale >72h, skip_llm=true)"
             fi
+            if [ -n "$AUTOFIX" ]; then
+              echo ""
+              echo "### Auto-Fix Candidates"
+              echo "Detected fixable violations: ${AUTOFIX%,*}"
+              echo "Auto-fix workflow will be triggered for these targets."
+            fi
           } >> /tmp/summary.md
 
           echo "new_failures=${NEW_FAILURES}" >> "$GITHUB_OUTPUT"
           echo "recovered=${RECOVERED}" >> "$GITHUB_OUTPUT"
+
+      - name: Feishu escalation markers
+        id: escalation
+        run: |
+          FAIL="${{ steps.agg.outputs.fail }}"
+          TOTAL="${{ steps.agg.outputs.total }}"
+          PASS="${{ steps.agg.outputs.pass }}"
+          STALE="${{ steps.agg.outputs.stale }}"
+          NEW="${{ steps.trend.outputs.new_failures }}"
+          RECOVERED="${{ steps.trend.outputs.recovered }}"
+          AUTOFIX="${{ steps.agg.outputs.autofix_targets }}"
+          HEALTH_PCT=0
+          if [ "$TOTAL" -gt 0 ]; then HEALTH_PCT=$(( PASS * 100 / TOTAL )); fi
+
+          # Determine severity
+          if [ "$FAIL" -ge 4 ]; then
+            SEVERITY="P0"
+          elif [ "$FAIL" -ge 1 ]; then
+            SEVERITY="P1"
+          elif [ "$STALE" -ge 4 ]; then
+            SEVERITY="P2"
+          else
+            SEVERITY="P3"
+          fi
+
+          {
+            echo ""
+            echo "<!-- SENTINEL_ESCALATION_BEGIN -->"
+            echo "{"
+            echo "  \"type\": \"dashboard\","
+            echo "  \"severity\": \"${SEVERITY}\","
+            echo "  \"health_pct\": ${HEALTH_PCT},"
+            echo "  \"total\": ${TOTAL},"
+            echo "  \"pass\": ${PASS},"
+            echo "  \"fail\": ${FAIL},"
+            echo "  \"stale\": ${STALE},"
+            echo "  \"new_failures\": \"${NEW%,*}\","
+            echo "  \"recovered\": \"${RECOVERED%,*}\","
+            echo "  \"autofix_targets\": \"${AUTOFIX%,*}\","
+            echo "  \"generated\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+            echo "}"
+            echo "<!-- SENTINEL_ESCALATION_END -->"
+          } >> /tmp/summary.md
+
+          echo "severity=${SEVERITY}" >> "$GITHUB_OUTPUT"
 
       - name: Step summary
         run: cat /tmp/summary.md >> $GITHUB_STEP_SUMMARY
@@ -192,20 +304,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
         run: |
-          # Always create a dashboard-report issue (closed) as historical record
-          # for trend detection on next run
           BODY=$(cat /tmp/summary.md)
+          SEVERITY="${{ steps.escalation.outputs.severity }}"
           ISSUE_URL=$(curl -s -X POST \
             -H "Authorization: token ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/huanlongAI/sentinel-shared/issues" \
             -d "$(jq -n \
-              --arg title "Dashboard Report $(date -u +%Y-%m-%d)" \
+              --arg title "Dashboard Report $(date -u +%Y-%m-%d) [${SEVERITY}]" \
               --arg body "$BODY" \
               '{title: $title, body: $body, labels: ["dashboard-report"]}')" \
             | jq -r '.html_url // "N/A"')
           echo "Report saved: $ISSUE_URL"
-          # Auto-close the report issue (it's just for record-keeping)
+          # Auto-close (historical record)
           ISSUE_NUM=$(echo "$ISSUE_URL" | grep -oP '\d+$' || true)
           if [ -n "$ISSUE_NUM" ]; then
             curl -s -X PATCH \
@@ -215,7 +326,7 @@ jobs:
               -d '{"state":"closed"}' > /dev/null
           fi
 
-      - name: Alert on failure
+      - name: Alert on new failure
         if: steps.agg.outputs.fail != '0'
         env:
           GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
@@ -223,11 +334,12 @@ jobs:
           FAIL="${{ steps.agg.outputs.fail }}"
           TOTAL="${{ steps.agg.outputs.total }}"
           NEW="${{ steps.trend.outputs.new_failures }}"
+          SEVERITY="${{ steps.escalation.outputs.severity }}"
           BODY=$(cat /tmp/summary.md)
 
-          # Only create alert issue if there are NEW failures (not persistent)
+          # Only alert on NEW failures
           if [ -z "$NEW" ]; then
-            echo "No new failures -- skipping alert issue (persistent failures only)."
+            echo "No new failures -- skipping alert (persistent only)."
             exit 0
           fi
 
@@ -236,13 +348,39 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/huanlongAI/sentinel-shared/issues?state=open&labels=dashboard-alert&per_page=1" \
             | jq 'length')
+
           if [ "$EXISTING" = "0" ]; then
             curl -s -X POST \
               -H "Authorization: token ${GH_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/huanlongAI/sentinel-shared/issues" \
               -d "$(jq -n \
-                --arg title "Sentinel: ${FAIL}/${TOTAL} repos failing (new: ${NEW%,*})" \
+                --arg title "[${SEVERITY}] Sentinel: ${FAIL}/${TOTAL} repos failing (new: ${NEW%,*})" \
                 --arg body "$BODY" \
                 '{title: $title, body: $body, labels: ["dashboard-alert"]}')"
+          fi
+
+  # --- Auto-fix trigger: dispatches sentinel-autofix for each D-2/D-6 failure ---
+  trigger-autofix:
+    needs: collect-status
+    if: needs.collect-status.outputs.autofix_targets != ''
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 2
+      matrix:
+        target: ${{ fromJson(needs.collect-status.outputs.check_matrix_json) }}
+    steps:
+      - name: Trigger auto-fix for ${{ matrix.target.repo }} (${{ matrix.target.check }})
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
+        run: |
+          echo "Triggering auto-fix: repo=${{ matrix.target.repo }}, check=${{ matrix.target.check }}"
+          RESULT=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/huanlongAI/sentinel-shared/actions/workflows/sentinel-autofix.yml/dispatches" \
+            -d "{\"ref\":\"main\",\"inputs\":{\"target_repo\":\"${{ matrix.target.repo }}\",\"check_id\":\"${{ matrix.target.check }}\",\"dry_run\":\"true\"}}")
+          echo "Dispatch result: HTTP ${RESULT}"
+          if [ "$RESULT" != "204" ]; then
+            echo "::warning::Failed to trigger auto-fix for ${{ matrix.target.repo }}:${{ matrix.target.check }} (HTTP ${RESULT})"
           fi
