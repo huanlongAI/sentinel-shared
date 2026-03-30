@@ -127,17 +127,25 @@ jobs:
           echo "Applying fixes..."
           bash "$PATCH_FILE" || echo "Some fix commands failed"
 
-          if git diff --quiet; then
-            echo "No files were modified after applying fixes"
+          # Only stage source files changed by sed, NOT .sentinel/results/
+          git diff --name-only | grep -v '^\.sentinel/' | xargs -r git add
+
+          if git diff --cached --quiet; then
+            echo "No source files were modified after applying fixes"
             exit 0
           fi
 
-          git add -A
           CHANGED_FILES=$(git diff --cached --name-only | wc -l | tr -d ' ')
+          echo "Files to commit: $CHANGED_FILES"
+          git diff --cached --name-only
           git commit -m "fix(sentinel): auto-fix $CHECK violations ($CHANGED_FILES files)"
 
+          echo "Pushing branch $BRANCH to huanlongAI/${REPO}..."
           git push "https://x-access-token:${GH_TOKEN}@github.com/huanlongAI/${REPO}.git" \
-            "$BRANCH" 2>/dev/null
+            "$BRANCH" 2>&1 || {
+              echo "::error::git push failed. Check CASCADE_TOKEN permissions for ${REPO}."
+              exit 1
+            }
 
       - name: Create PR
         if: |
