@@ -1,0 +1,245 @@
+name: Caller Workflow Sync
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview only, do not create PRs
+        required: false
+        default: 'true'
+        type: boolean
+  schedule:
+    - cron: '0 0 * * 0'
+
+permissions:
+  contents: read
+
+env:
+  DOWNSTREAM_REPOS: >-
+    tzhOS tzh-Harness tzh-agent-configs tzh-evals tzh-dotfiles
+    tzh-legal tzh-marketing guanghe tzhOS-App super-founder
+    hl-platform hl-framework hl-factory hl-dispatch hl-contracts hl-console-native
+
+  CANONICAL_BODY: |
+    name: Consistency Sentinel
+    on:
+      pull_request:
+        types: [opened, synchronize, reopened]
+      push:
+        branches: [main]
+      repository_dispatch:
+        types: [sentinel-cascade]
+      workflow_dispatch:
+        inputs:
+          skip_llm:
+            description: 'Skip LLM review layer'
+            required: false
+            default: 'false'
+            type: boolean
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    jobs:
+      sentinel:
+        uses: huanlongAI/sentinel-shared/.github/workflows/consistency-sentinel.yml@main
+        secrets:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        with:
+          skip_llm: ${{ github.event.inputs.skip_llm || 'false' }}
+
+jobs:
+  sync-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check caller workflow drift across repos
+        id: drift
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
+        run: |
+          DRIFTED=""
+          SYNCED=""
+          MISSING=""
+          SKIPPED=""
+          DRY_RUN="${{ inputs.dry_run || 'true' }}"
+          REPORT=""
+
+          # Normalize canonical: strip comments, leading/trailing whitespace,
+          # collapse whitespace for comparison
+          CANONICAL_NORM=$(echo "$CANONICAL_BODY" \
+            | grep -v '^\s*#' \
+            | sed 's/^\s*//' | sed 's/\s*$//' \
+            | grep -v '^$' \
+            | sort)
+
+          for REPO in $DOWNSTREAM_REPOS; do
+            echo "::group::Checking ${REPO}"
+
+            # Fetch current caller workflow
+            RESP=$(curl -s -w "\n%{http_code}" \
+              -H "Authorization: token ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github.raw+json" \
+              "https://api.github.com/repos/huanlongAI/${REPO}/contents/.github/workflows/consistency-sentinel.yml?ref=main")
+            HTTP_CODE=$(echo "$RESP" | tail -1)
+            BODY=$(echo "$RESP" | sed '$d')
+
+            if [ "$HTTP_CODE" = "404" ]; then
+              REPORT="${REPORT}| ${REPO} | MISSING | No caller workflow found |\n"
+              MISSING="${MISSING}${REPO},"
+              echo "::endgroup::"
+              continue
+            fi
+
+            if [ "$HTTP_CODE" != "200" ]; then
+              REPORT="${REPORT}| ${REPO} | ERROR | HTTP ${HTTP_CODE} |\n"
+              SKIPPED="${SKIPPED}${REPO},"
+              echo "::endgroup::"
+              continue
+            fi
+
+            # Normalize fetched: strip comments, leading/trailing whitespace
+            FETCHED_NORM=$(echo "$BODY" \
+              | grep -v '^\s*#' \
+              | sed 's/^\s*//' | sed 's/\s*$//' \
+              | grep -v '^$' \
+              | sort)
+
+            # Compare structural content (ignoring comments and whitespace)
+            if [ "$CANONICAL_NORM" = "$FETCHED_NORM" ]; then
+              REPORT="${REPORT}| ${REPO} | OK | In sync |\n"
+              SYNCED="${SYNCED}${REPO},"
+            else
+              REPORT="${REPORT}| ${REPO} | DRIFT | Caller differs from canonical |\n"
+              DRIFTED="${DRIFTED}${REPO},"
+
+              if [ "$DRY_RUN" = "false" ]; then
+                # Check for existing open sync PR
+                EXISTING_PR=$(curl -s \
+                  -H "Authorization: token ${GH_TOKEN}" \
+                  -H "Accept: application/vnd.github+json" \
+                  "https://api.github.com/repos/huanlongAI/${REPO}/pulls?state=open&head=sentinel-caller-sync&per_page=1" \
+                  | jq 'length')
+
+                if [ "$EXISTING_PR" != "0" ]; then
+                  echo "Open sync PR already exists for ${REPO}, skipping."
+                  echo "::endgroup::"
+                  continue
+                fi
+
+                # Get default branch SHA for creating new branch
+                DEFAULT_SHA=$(curl -s \
+                  -H "Authorization: token ${GH_TOKEN}" \
+                  -H "Accept: application/vnd.github+json" \
+                  "https://api.github.com/repos/huanlongAI/${REPO}/git/refs/heads/main" \
+                  | jq -r '.object.sha // empty')
+
+                if [ -z "$DEFAULT_SHA" ]; then
+                  echo "Cannot resolve main branch SHA for ${REPO}"
+                  echo "::endgroup::"
+                  continue
+                fi
+
+                # Create branch
+                curl -s -X POST \
+                  -H "Authorization: token ${GH_TOKEN}" \
+                  -H "Accept: application/vnd.github+json" \
+                  "https://api.github.com/repos/huanlongAI/${REPO}/git/refs" \
+                  -d "$(jq -n --arg sha "$DEFAULT_SHA" \
+                    '{ref: "refs/heads/sentinel-caller-sync", sha: $sha}')" > /dev/null 2>&1
+
+                # Get current file SHA for update
+                FILE_SHA=$(curl -s \
+                  -H "Authorization: token ${GH_TOKEN}" \
+                  -H "Accept: application/vnd.github+json" \
+                  "https://api.github.com/repos/huanlongAI/${REPO}/contents/.github/workflows/consistency-sentinel.yml?ref=sentinel-caller-sync" \
+                  | jq -r '.sha // empty')
+
+                # Update file on branch
+                ENCODED=$(echo "$CANONICAL_BODY" | base64 -w0)
+                UPDATE_RESULT=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+                  -H "Authorization: token ${GH_TOKEN}" \
+                  -H "Accept: application/vnd.github+json" \
+                  "https://api.github.com/repos/huanlongAI/${REPO}/contents/.github/workflows/consistency-sentinel.yml" \
+                  -d "$(jq -n \
+                    --arg msg "chore(sentinel): sync caller workflow to latest template" \
+                    --arg content "$ENCODED" \
+                    --arg sha "$FILE_SHA" \
+                    --arg branch "sentinel-caller-sync" \
+                    '{message: $msg, content: $content, sha: $sha, branch: $branch}')")
+
+                if [ "$UPDATE_RESULT" = "200" ] || [ "$UPDATE_RESULT" = "201" ]; then
+                  # Create PR
+                  PR_URL=$(curl -s -X POST \
+                    -H "Authorization: token ${GH_TOKEN}" \
+                    -H "Accept: application/vnd.github+json" \
+                    "https://api.github.com/repos/huanlongAI/${REPO}/pulls" \
+                    -d "$(jq -n \
+                      --arg title "chore(sentinel): sync caller workflow to latest template" \
+                      --arg body "Auto-generated by sentinel caller-sync workflow.\n\nThe caller workflow in this repo has drifted from the canonical template in sentinel-shared. This PR updates it to match.\n\nLabel: sentinel-auto-sync" \
+                      --arg head "sentinel-caller-sync" \
+                      --arg base "main" \
+                      '{title: $title, body: $body, head: $head, base: $base}')" \
+                    | jq -r '.html_url // "failed"')
+                  echo "PR created: $PR_URL"
+                else
+                  echo "File update failed (HTTP $UPDATE_RESULT) for ${REPO}"
+                fi
+              fi
+            fi
+
+            echo "::endgroup::"
+            sleep 0.2
+          done
+
+          # Count results
+          DRIFT_COUNT=$(echo "$DRIFTED" | tr ',' '\n' | grep -c . || true)
+          SYNC_COUNT=$(echo "$SYNCED" | tr ',' '\n' | grep -c . || true)
+          MISS_COUNT=$(echo "$MISSING" | tr ',' '\n' | grep -c . || true)
+
+          echo "drifted=${DRIFTED}" >> "$GITHUB_OUTPUT"
+          echo "drift_count=${DRIFT_COUNT}" >> "$GITHUB_OUTPUT"
+          echo "synced=${SYNCED}" >> "$GITHUB_OUTPUT"
+          echo "missing=${MISSING}" >> "$GITHUB_OUTPUT"
+
+          # Build summary
+          {
+            echo "## Caller Workflow Sync Report"
+            echo ""
+            echo "Mode: $( [ '$DRY_RUN' = 'true' ] && echo 'DRY RUN (preview only)' || echo 'LIVE (PRs created)')"
+            echo "Synced: ${SYNC_COUNT} | Drifted: ${DRIFT_COUNT} | Missing: ${MISS_COUNT}"
+            echo ""
+            printf "| Repo | Status | Details |\n|------|--------|--------|\n${REPORT}"
+          } > /tmp/sync-report.md
+
+      - name: Step summary
+        run: cat /tmp/sync-report.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Alert on drift
+        if: steps.drift.outputs.drift_count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
+        run: |
+          DRIFTED="${{ steps.drift.outputs.drifted }}"
+          COUNT="${{ steps.drift.outputs.drift_count }}"
+          DRY_RUN="${{ inputs.dry_run || 'true' }}"
+          BODY=$(cat /tmp/sync-report.md)
+
+          if [ "$DRY_RUN" = "true" ]; then
+            BODY="${BODY}\n\n> Run with dry_run=false to create sync PRs."
+          fi
+
+          # Create or update issue
+          EXISTING=$(curl -s \
+            -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/huanlongAI/sentinel-shared/issues?state=open&labels=caller-drift&per_page=1" \
+            | jq 'length')
+          if [ "$EXISTING" = "0" ]; then
+            curl -s -X POST \
+              -H "Authorization: token ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/huanlongAI/sentinel-shared/issues" \
+              -d "$(jq -n \
+                --arg title "Caller Sync: ${COUNT} repo(s) drifted from canonical template" \
+                --arg body "$BODY" \
+                '{title: $title, body: $body, labels: ["caller-drift"]}')"
+          fi
