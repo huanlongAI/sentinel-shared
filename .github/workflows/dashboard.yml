@@ -360,6 +360,101 @@ jobs:
                 '{title: $title, body: $body, labels: ["dashboard-alert"]}')"
           fi
 
+      - name: Feishu notification
+        if: always()
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
+        run: |
+          if [ -z "$FEISHU_WEBHOOK_URL" ]; then
+            echo "FEISHU_WEBHOOK_URL not configured -- skipping notification"
+            exit 0
+          fi
+
+          SEVERITY="${{ steps.escalation.outputs.severity }}"
+          PASS="${{ steps.agg.outputs.pass }}"
+          FAIL="${{ steps.agg.outputs.fail }}"
+          TOTAL="${{ steps.agg.outputs.total }}"
+          STALE="${{ steps.agg.outputs.stale }}"
+          NEW="${{ steps.trend.outputs.new_failures }}"
+          RECOVERED="${{ steps.trend.outputs.recovered }}"
+          AUTOFIX="${{ steps.agg.outputs.autofix_targets }}"
+          HEALTH_PCT=0
+          if [ "$TOTAL" -gt 0 ]; then HEALTH_PCT=$(( PASS * 100 / TOTAL )); fi
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          # Card color based on severity
+          case "$SEVERITY" in
+            P0) TEMPLATE="red";    EMOJI="🔴" ;;
+            P1) TEMPLATE="orange"; EMOJI="🟠" ;;
+            P2) TEMPLATE="yellow"; EMOJI="🟡" ;;
+            P3) TEMPLATE="green";  EMOJI="🟢" ;;
+            *)  TEMPLATE="blue";   EMOJI="📊" ;;
+          esac
+
+          # Build trend line
+          TREND_LINE=""
+          if [ -n "$NEW" ]; then
+            TREND_LINE="${TREND_LINE}**新增故障**: ${NEW%,*}\n"
+          fi
+          if [ -n "$RECOVERED" ]; then
+            TREND_LINE="${TREND_LINE}**已恢复**: ${RECOVERED%,*}\n"
+          fi
+          if [ -n "$AUTOFIX" ]; then
+            TREND_LINE="${TREND_LINE}**自动修复**: ${AUTOFIX%,*}\n"
+          fi
+          if [ -z "$TREND_LINE" ]; then
+            TREND_LINE="无变化"
+          fi
+
+          # Build Feishu interactive card JSON
+          CARD_JSON=$(jq -n \
+            --arg title "${EMOJI} Sentinel Dashboard [${SEVERITY}]" \
+            --arg template "$TEMPLATE" \
+            --arg health "**健康度**: ${HEALTH_PCT}% (${PASS}/${TOTAL})" \
+            --arg breakdown "**通过**: ${PASS}  **失败**: ${FAIL}  **过期**: ${STALE}" \
+            --arg trend "$TREND_LINE" \
+            --arg time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg url "$RUN_URL" \
+            '{
+              msg_type: "interactive",
+              card: {
+                header: {
+                  title: { content: $title, tag: "plain_text" },
+                  template: $template
+                },
+                elements: [
+                  { tag: "div", text: { content: ($health + "\n" + $breakdown), tag: "lark_md" } },
+                  { tag: "div", text: { content: $trend, tag: "lark_md" } },
+                  { tag: "div", text: { content: ("**时间**: " + $time), tag: "lark_md" } },
+                  { tag: "action", actions: [
+                    { tag: "button", text: { content: "查看 Dashboard", tag: "plain_text" }, url: $url, type: "primary" }
+                  ]}
+                ]
+              }
+            }')
+
+          # Optional: HMAC signature for Feishu webhook
+          if [ -n "$FEISHU_WEBHOOK_SECRET" ]; then
+            TIMESTAMP=$(date +%s)
+            STRING_TO_SIGN="${TIMESTAMP}\n${FEISHU_WEBHOOK_SECRET}"
+            SIGN=$(printf "%s" "$STRING_TO_SIGN" | openssl dgst -sha256 -hmac "" -binary | base64)
+            CARD_JSON=$(echo "$CARD_JSON" | jq --arg ts "$TIMESTAMP" --arg sign "$SIGN" '. + {timestamp: $ts, sign: $sign}')
+          fi
+
+          # Send to Feishu
+          HTTP_CODE=$(curl -s -o /tmp/feishu-response.json -w "%{http_code}" \
+            -X POST "$FEISHU_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "$CARD_JSON")
+
+          echo "Feishu response: HTTP ${HTTP_CODE}"
+          cat /tmp/feishu-response.json 2>/dev/null || true
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::warning::Feishu notification failed (HTTP ${HTTP_CODE})"
+          fi
+
   # --- Auto-fix trigger: dispatches sentinel-autofix for each D-2/D-6 failure ---
   trigger-autofix:
     needs: collect-status
