@@ -43,7 +43,7 @@ env:
     hl-factory
     hl-dispatch
     hl-contracts
-    hl-console-native
+    hl-console-native team-memory
 
 jobs:
   fan-out:

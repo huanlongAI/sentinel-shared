@@ -17,7 +17,7 @@ env:
   DOWNSTREAM_REPOS: >-
     tzhOS tzh-Harness tzh-agent-configs tzh-evals tzh-dotfiles
     tzh-legal tzh-marketing guanghe tzhOS-App super-founder
-    hl-platform hl-framework hl-factory hl-dispatch hl-contracts hl-console-native
+    hl-platform hl-framework hl-factory hl-dispatch hl-contracts hl-console-native team-memory
 
   CANONICAL_BODY: |
     name: Consistency Sentinel
