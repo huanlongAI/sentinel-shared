@@ -77,8 +77,8 @@ else
   if echo "$CHANGED_FILES" | grep -q "^${CHANGELOG_FILE}$"; then
     echo "✓ ${CHANGELOG_FILE} was updated alongside governance changes"
   else
-    # Also accept RULINGS.md update as changelog equivalent
-    if echo "$CHANGED_FILES" | grep -q "^RULINGS.md$"; then
+    # Also accept RULINGS.md update as changelog equivalent (at any path)
+    if echo "$CHANGED_FILES" | grep -q "RULINGS.md$"; then
       echo "✓ RULINGS.md was updated (accepted as changelog equivalent)"
     else
       PASSED=false

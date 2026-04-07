@@ -22,7 +22,9 @@ parse_cascade_map() {
   sed -n "/^\s*cascade_map:/,/^\s*[a-z]/p" "$file" 2>/dev/null | \
     { grep -E "^\s+[^ :]+:\s+" || true; } | \
     sed 's/^\s*//' | \
-    sed 's/:\s*/=/'
+    sed 's/:\s*/=/' | \
+    sed 's/["\x27]//g' | \
+    sed 's/[[:space:]]*$//'
 }
 
 echo "D-3: Cascade integrity"
