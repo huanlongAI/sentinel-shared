@@ -105,7 +105,7 @@ cat > "$AGGREGATE_FILE" <<EOF
     "failed": $FAILED_CHECKS,
     "pass_rate": $(echo "scale=2; $PASSED_CHECKS * 100 / $TOTAL_CHECKS" | bc 2>/dev/null || echo "0")
   },
-  "issues": $(printf '%s\n' "${ALL_ISSUES[@]}" | jq -R . | jq -s .),
+  "issues": $(if [ ${#ALL_ISSUES[@]} -gt 0 ]; then printf '%s\n' "${ALL_ISSUES[@]}" | jq -R . | jq -s .; else echo '[]'; fi),
   "results": $RESULTS_ARRAY,
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
@@ -128,6 +128,41 @@ fi
 
 echo ""
 echo "Result written to $AGGREGATE_FILE"
+
+# ── Generate sentinel-report.md ──
+REPORT_FILE="$RESULTS_DIR/sentinel-report.md"
+{
+  echo "### Consistency Sentinel"
+  echo ""
+  if [ "$OVERALL_PASSED" = true ]; then
+    echo "**判定**: PASS ✅"
+  else
+    echo "**判定**: FAIL ❌"
+  fi
+  echo "**检查项**: ${PASSED_CHECKS}/${TOTAL_CHECKS} 通过"
+  echo ""
+  echo "| 检查 | 状态 | 问题 |"
+  echo "|------|------|------|"
+
+  while IFS= read -r result_file; do
+    [ -z "$result_file" ] && continue
+    [ ! -f "$result_file" ] && continue
+    r_id=$(jq -r '.check_id // "?"' "$result_file" 2>/dev/null || echo "?")
+    r_name=$(jq -r '.check_name // "?"' "$result_file" 2>/dev/null || echo "?")
+    r_pass=$(jq -r '.passed // false' "$result_file" 2>/dev/null || echo "false")
+    r_issues=$(jq -r '([.issues[]?, .violations[]?] | join("; ")) // ""' "$result_file" 2>/dev/null || echo "")
+    if [ "$r_pass" = "true" ]; then
+      echo "| ${r_id} ${r_name} | ✅ | — |"
+    else
+      echo "| ${r_id} ${r_name} | ❌ | ${r_issues:-见详细日志} |"
+    fi
+  done <<< "$RESULT_FILES"
+
+  echo ""
+  echo "> 详细日志见 Actions artifacts"
+} > "$REPORT_FILE"
+
+echo "Report written to $REPORT_FILE"
 
 # Output GitHub Actions annotation
 if [ "$OVERALL_PASSED" = false ]; then

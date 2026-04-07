@@ -92,7 +92,7 @@ fi
 
 # Generate result JSON
 RESULT_FILE="$RESULTS_DIR/d1-changelog.json"
-ISSUES_JSON=$(if [ ${#ISSUES[@]} -gt 0 ]; then printf '%s\n' "${ISSUES[@]}"; fi | jq -R . | jq -s .)
+ISSUES_JSON=$(if [ ${#ISSUES[@]} -gt 0 ]; then printf '%s\n' "${ISSUES[@]}" | jq -R . | jq -s .; else echo '[]'; fi)
 cat > "$RESULT_FILE" <<EOF
 {
   "check_id": "D-1",

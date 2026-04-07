@@ -91,7 +91,7 @@ cat > "$RESULT_FILE" <<EOF
   "check_id": "D-3",
   "check_name": "Cascade Integrity",
   "passed": $([[ "$PASSED" == true ]] && echo "true" || echo "false"),
-  "issues": $(if [ ${#ISSUES[@]} -gt 0 ]; then printf '%s\n' "${ISSUES[@]}"; fi | jq -R . | jq -s .),
+  "issues": $(if [ ${#ISSUES[@]} -gt 0 ]; then printf '%s\n' "${ISSUES[@]}" | jq -R . | jq -s .; else echo '[]'; fi),
   "rules_checked": $(echo "$CASCADE_MAP" | wc -l),
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }

@@ -133,7 +133,7 @@ cat > "$RESULT_FILE" <<EOF
   "check_id": "D-2",
   "check_name": "Terminology",
   "passed": $([[ "$PASSED" == true ]] && echo "true" || echo "false"),
-  "violations": $(if [ ${#VIOLATIONS[@]} -gt 0 ]; then printf '%s\n' "${VIOLATIONS[@]}"; fi | jq -R . | jq -s .),
+  "violations": $(if [ ${#VIOLATIONS[@]} -gt 0 ]; then printf '%s\n' "${VIOLATIONS[@]}" | jq -R . | jq -s .; else echo '[]'; fi),
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF

@@ -101,7 +101,7 @@ else
   elif [ "$REPO_TYPE" = "governance" ]; then
     # Governance repo: any LLM FAIL or D-1 failure = P0
     IS_P0=false
-    for dim in "${FAILED_DIMS[@]}"; do
+    for dim in "${FAILED_DIMS[@]+"${FAILED_DIMS[@]}"}"; do
       case "$dim" in
         D-1|LLM:GPC-003|LLM:SAC-004) IS_P0=true ;;
       esac
