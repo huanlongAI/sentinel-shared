@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # LLM Review Layer — Consistency Sentinel
-# Calls Claude API to perform semantic consistency checks
+# Calls the configured Claude-compatible provider to perform semantic checks.
 
 CONFIG_FILE="${CONFIG_FILE:-.sentinel/config.yaml}"
 RESULTS_DIR="${RESULTS_DIR:-.sentinel/results}"
@@ -11,22 +11,45 @@ SENTINEL_SHARED_DIR="${SENTINEL_SHARED_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")
 mkdir -p "$RESULTS_DIR"
 
 # --- YAML helpers (no yq) ---
+trim_yaml_value() {
+  sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/^[[:space:]]+|[[:space:]]+$//g' | tr -d '"' | tr -d "'"
+}
+
+yaml_section() {
+  local file="$1" parent="$2"
+  awk -v parent="$parent" '
+    $0 ~ "^[[:space:]]*" parent ":[[:space:]]*($|#)" { in_section=1; next }
+    in_section && $0 ~ "^[^[:space:]]" { exit }
+    in_section { print }
+  ' "$file" 2>/dev/null || true
+}
+
 yaml_get() {
   local file="$1" key="$2" default="${3:-}"
-  local val=$(grep -E "^\s*${key}:" "$file" 2>/dev/null | head -1 | sed 's/^[^:]*:\s*//' | sed 's/\s*#.*//' | tr -d '"' | tr -d "'")
+  local val
+  val=$(grep -E "^[[:space:]]*${key}:" "$file" 2>/dev/null | head -1 | trim_yaml_value || true)
   echo "${val:-$default}"
 }
 
 yaml_get_array() {
   local file="$1" key="$2"
-  sed -n "/^\s*${key}:/,/^\s*[a-z]/p" "$file" 2>/dev/null | { grep "^\s*-" || true; } | sed 's/^\s*-\s*//' | tr -d '"' | tr -d "'"
+  awk -v key="$key" '
+    $0 ~ "^[[:space:]]*" key ":" { in_array=1; next }
+    in_array && $0 ~ "^[^[:space:]]" { exit }
+    in_array && $0 ~ "^[[:space:]]*-" {
+      sub(/^[[:space:]]*-[[:space:]]*/, "", $0)
+      gsub(/["'\''"]/, "", $0)
+      print
+    }
+  ' "$file" 2>/dev/null || true
 }
 
 # Read a scalar value nested under a parent section
 # Usage: yaml_get_nested config.yaml "llm" "model" "default"
 yaml_get_nested() {
   local file="$1" parent="$2" key="$3" default="${4:-}"
-  local val=$(sed -n "/^\s*${parent}:/,/^\S/p" "$file" 2>/dev/null | grep -E "^\s+${key}:" | head -1 | sed 's/^[^:]*:\s*//' | sed 's/\s*#.*//' | tr -d '"' | tr -d "'")
+  local val
+  val=$(yaml_section "$file" "$parent" | grep -E "^[[:space:]]+${key}:" | head -1 | trim_yaml_value || true)
   echo "${val:-$default}"
 }
 
@@ -34,46 +57,92 @@ yaml_get_nested() {
 # Usage: yaml_get_nested_array config.yaml "llm" "checks"
 yaml_get_nested_array() {
   local file="$1" parent="$2" key="$3"
-  # Extract parent section, then find child array
-  sed -n "/^\s*${parent}:/,/^\S/p" "$file" 2>/dev/null | \
-    sed -n "/^\s*${key}:/,/^\s*[a-z]/p" | \
-    { grep "^\s*-" || true; } | \
-    sed 's/^\s*-\s*//' | tr -d '"' | tr -d "'"
+  yaml_section "$file" "$parent" | awk -v key="$key" '
+    $0 ~ "^[[:space:]]+" key ":" { in_array=1; next }
+    in_array && $0 ~ "^[[:space:]]+[A-Za-z0-9_-]+:" { exit }
+    in_array && $0 ~ "^[[:space:]]*-" {
+      sub(/^[[:space:]]*-[[:space:]]*/, "", $0)
+      gsub(/["'\''"]/, "", $0)
+      print
+    }
+  ' || true
 }
 
 # Read key-value pairs under a section (for anchor_files)
 # Returns: key=value per line
 yaml_get_kv_pairs() {
   local file="$1" section="$2"
-  sed -n "/^\s*${section}:/,/^\S/p" "$file" 2>/dev/null | \
-    { grep -E "^\s+\w+:" || true; } | \
-    sed 's/^\s*//' | sed 's/:\s*/=/' | tr -d '"' | tr -d "'"
+  yaml_section "$file" "$section" | \
+    { grep -E "^[[:space:]]+[A-Za-z0-9_-]+:" || true; } | \
+    sed -E 's/^[[:space:]]*//; s/:[[:space:]]*/=/' | tr -d '"' | tr -d "'"
 }
 
 echo "LLM Review Layer"
 
-# --- Pre-flight check ---
-if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-  echo "::warning::ANTHROPIC_API_KEY not set — skipping LLM review"
+write_skip_result() {
+  local reason="$1"
   cat > "$RESULTS_DIR/llm-review.json" <<EOF
-{"review_id":"llm-review","status":"skipped","reason":"ANTHROPIC_API_KEY not configured","passed":true,"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+{"review_id":"llm-review","status":"skipped","reason":"${reason}","passed":true,"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
-  exit 0
-fi
+}
 
 # --- Read LLM configuration (nested under llm:) ---
 LLM_MODEL=$(yaml_get_nested "$CONFIG_FILE" "llm" "model" "claude-opus-4-6")
 LLM_MAX_TOKENS=$(yaml_get_nested "$CONFIG_FILE" "llm" "max_output_tokens" "8192")
 LLM_CHECKS=$(yaml_get_nested_array "$CONFIG_FILE" "llm" "checks")
 CONFIDENCE_THRESHOLD=$(yaml_get_nested "$CONFIG_FILE" "llm" "confidence_threshold" "0.7")
+CONFIG_PROVIDER=$(yaml_get_nested "$CONFIG_FILE" "llm" "provider" "auto")
+REQUESTED_PROVIDER="${SENTINEL_LLM_PROVIDER:-$CONFIG_PROVIDER}"
+HEIYUCODE_BASE_URL="${HEIYUCODE_BASE_URL:-$(yaml_get_nested "$CONFIG_FILE" "llm" "heiyucode_base_url" "https://www.heiyucode.com")}"
+HEIYUCODE_MODEL="${HEIYUCODE_MODEL:-$(yaml_get_nested "$CONFIG_FILE" "llm" "heiyucode_model" "$LLM_MODEL")}"
+HEIYUCODE_TOKEN="${HEIYUCODE_AUTH_TOKEN:-${HEIYUCODE_API_KEY:-}}"
 
-echo "Config: model=$LLM_MODEL max_tokens=$LLM_MAX_TOKENS threshold=$CONFIDENCE_THRESHOLD"
+resolve_provider() {
+  local requested="$1"
+  case "$requested" in
+    ""|"auto")
+      if [ -n "$HEIYUCODE_TOKEN" ]; then
+        echo "heiyucode_claude_code"
+      elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+        echo "anthropic"
+      else
+        echo "none"
+      fi
+      ;;
+    "anthropic"|"anthropic_messages"|"claude")
+      echo "anthropic"
+      ;;
+    "heiyucode"|"heiyucode_claude_code"|"heiyu")
+      echo "heiyucode_claude_code"
+      ;;
+    *)
+      echo "unsupported"
+      ;;
+  esac
+}
+
+LLM_PROVIDER=$(resolve_provider "$REQUESTED_PROVIDER")
+if [ "$LLM_PROVIDER" = "heiyucode_claude_code" ]; then
+  LLM_MODEL="$HEIYUCODE_MODEL"
+fi
+
+echo "Config: provider=$LLM_PROVIDER model=$LLM_MODEL max_tokens=$LLM_MAX_TOKENS threshold=$CONFIDENCE_THRESHOLD"
+
+if [ "$LLM_PROVIDER" = "unsupported" ]; then
+  echo "::warning::Unsupported LLM provider '$REQUESTED_PROVIDER' — skipping LLM review"
+  write_skip_result "Unsupported LLM provider: ${REQUESTED_PROVIDER}"
+  exit 0
+fi
+
+if [ "$LLM_PROVIDER" = "none" ]; then
+  echo "::warning::No LLM provider credentials configured — skipping LLM review"
+  write_skip_result "No LLM provider credentials configured"
+  exit 0
+fi
 
 if [ -z "$LLM_CHECKS" ]; then
   echo "No LLM checks enabled — skipping"
-  cat > "$RESULTS_DIR/llm-review.json" <<EOF
-{"review_id":"llm-review","status":"skipped","reason":"No checks enabled","passed":true,"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
-EOF
+  write_skip_result "No checks enabled"
   exit 0
 fi
 
@@ -184,48 +253,92 @@ Respond ONLY with a JSON object (no markdown wrapping):
   \"summary\": \"one-line summary\"
 }"
 
-# --- Call Claude API ---
-echo "Calling Claude API ($LLM_MODEL)..."
+# --- Call provider ---
+echo "Calling LLM provider ($LLM_PROVIDER / $LLM_MODEL)..."
 
 SYSTEM_JSON=$(echo "$SYSTEM_PROMPT_CONTENT" | jq -Rsa .)
 USER_JSON=$(echo "$USER_MSG" | jq -Rsa .)
 
-API_RESPONSE=$(curl -s --max-time 120 \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: ${ANTHROPIC_API_KEY}" \
-  -H "anthropic-version: 2023-06-01" \
-  -d "{
-    \"model\": \"${LLM_MODEL}\",
-    \"max_tokens\": ${LLM_MAX_TOKENS},
-    \"system\": ${SYSTEM_JSON},
-    \"messages\": [{\"role\": \"user\", \"content\": ${USER_JSON}}]
-  }" \
-  "https://api.anthropic.com/v1/messages" 2>&1) || true
+RESPONSE_TEXT=""
+if [ "$LLM_PROVIDER" = "anthropic" ]; then
+  if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+    echo "::warning::ANTHROPIC_API_KEY not set — skipping LLM review"
+    write_skip_result "ANTHROPIC_API_KEY not configured"
+    exit 0
+  fi
 
-# --- Parse response ---
-if [ -z "$API_RESPONSE" ]; then
-  echo "::warning::Claude API returned empty response — ESCALATE"
-  cat > "$RESULTS_DIR/llm-review.json" <<EOF
-{"review_id":"llm-review","status":"error","reason":"Empty API response","passed":true,"escalate":true,"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+  API_RESPONSE=$(curl -s --max-time 120 \
+    -H "Content-Type: application/json" \
+    -H "x-api-key: ${ANTHROPIC_API_KEY}" \
+    -H "anthropic-version: 2023-06-01" \
+    -d "{
+      \"model\": \"${LLM_MODEL}\",
+      \"max_tokens\": ${LLM_MAX_TOKENS},
+      \"system\": ${SYSTEM_JSON},
+      \"messages\": [{\"role\": \"user\", \"content\": ${USER_JSON}}]
+    }" \
+    "https://api.anthropic.com/v1/messages" 2>&1) || true
+
+  if [ -z "$API_RESPONSE" ]; then
+    echo "::warning::Claude API returned empty response — ESCALATE"
+    cat > "$RESULTS_DIR/llm-review.json" <<EOF
+{"review_id":"llm-review","provider":"$LLM_PROVIDER","model":"$LLM_MODEL","status":"error","reason":"Empty API response","passed":true,"escalate":true,"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
-  exit 0
+    exit 0
+  fi
+
+  API_ERROR=$(echo "$API_RESPONSE" | jq -r '.error.message // empty' 2>/dev/null || true)
+  if [ -n "$API_ERROR" ]; then
+    echo "::warning::Claude API error: $API_ERROR — ESCALATE"
+    cat > "$RESULTS_DIR/llm-review.json" <<EOF
+{"review_id":"llm-review","provider":"$LLM_PROVIDER","model":"$LLM_MODEL","status":"error","reason":"API error: ${API_ERROR}","passed":true,"escalate":true,"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+EOF
+    exit 0
+  fi
+
+  RESPONSE_TEXT=$(echo "$API_RESPONSE" | jq -r '.content[0].text // empty' 2>/dev/null || true)
+elif [ "$LLM_PROVIDER" = "heiyucode_claude_code" ]; then
+  if [ -z "$HEIYUCODE_TOKEN" ]; then
+    echo "::warning::HEIYUCODE_AUTH_TOKEN/HEIYUCODE_API_KEY not set — skipping LLM review"
+    write_skip_result "HeiyuCode token not configured"
+    exit 0
+  fi
+
+  CLAUDE_BIN="$(command -v claude || true)"
+  if [ -z "$CLAUDE_BIN" ]; then
+    if ! command -v npm >/dev/null 2>&1; then
+      echo "::warning::npm unavailable and claude CLI not installed — ESCALATE"
+      cat > "$RESULTS_DIR/llm-review.json" <<EOF
+{"review_id":"llm-review","provider":"$LLM_PROVIDER","model":"$LLM_MODEL","status":"error","reason":"claude CLI unavailable","passed":true,"escalate":true,"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+EOF
+      exit 0
+    fi
+    npm install --prefix /tmp/sentinel-claude-code-cli --no-save @anthropic-ai/claude-code@1.0.100 >/dev/null
+    CLAUDE_BIN="/tmp/sentinel-claude-code-cli/node_modules/.bin/claude"
+  fi
+
+  CLAUDE_PROMPT="${SYSTEM_PROMPT_CONTENT}
+
+${USER_MSG}"
+  CLAUDE_ERR="$(mktemp)"
+  if ! RESPONSE_TEXT=$(ANTHROPIC_AUTH_TOKEN="$HEIYUCODE_TOKEN" \
+    ANTHROPIC_BASE_URL="$HEIYUCODE_BASE_URL" \
+    ANTHROPIC_MODEL="$LLM_MODEL" \
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+    "$CLAUDE_BIN" -p "$CLAUDE_PROMPT" --output-format text --model "$LLM_MODEL" 2>"$CLAUDE_ERR"); then
+    CLAUDE_ERROR=$(cat "$CLAUDE_ERR")
+    echo "::warning::HeiyuCode Claude Code client error: $CLAUDE_ERROR — ESCALATE"
+    cat > "$RESULTS_DIR/llm-review.json" <<EOF
+{"review_id":"llm-review","provider":"$LLM_PROVIDER","model":"$LLM_MODEL","status":"error","reason":"HeiyuCode Claude Code client error","passed":true,"escalate":true,"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+EOF
+    exit 0
+  fi
 fi
 
-API_ERROR=$(echo "$API_RESPONSE" | jq -r '.error.message // empty' 2>/dev/null || true)
-if [ -n "$API_ERROR" ]; then
-  echo "::warning::Claude API error: $API_ERROR — ESCALATE"
-  cat > "$RESULTS_DIR/llm-review.json" <<EOF
-{"review_id":"llm-review","status":"error","reason":"API error: ${API_ERROR}","passed":true,"escalate":true,"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
-EOF
-  exit 0
-fi
-
-RESPONSE_TEXT=$(echo "$API_RESPONSE" | jq -r '.content[0].text // empty' 2>/dev/null || true)
 if [ -z "$RESPONSE_TEXT" ]; then
-  echo "::warning::No text in API response — ESCALATE"
-  echo "Raw (first 500): ${API_RESPONSE:0:500}"
+  echo "::warning::No text in provider response — ESCALATE"
   cat > "$RESULTS_DIR/llm-review.json" <<EOF
-{"review_id":"llm-review","status":"error","reason":"No text in response","passed":true,"escalate":true,"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+{"review_id":"llm-review","provider":"$LLM_PROVIDER","model":"$LLM_MODEL","status":"error","reason":"No text in response","passed":true,"escalate":true,"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
   exit 0
 fi
@@ -264,6 +377,7 @@ RESULT_FILE="$RESULTS_DIR/llm-review.json"
 cat > "$RESULT_FILE" <<EOF
 {
   "review_id": "llm-review",
+  "provider": "$LLM_PROVIDER",
   "model": "$LLM_MODEL",
   "status": "completed",
   "verdict": "$VERDICT",

@@ -43,9 +43,14 @@ env:
       sentinel:
         uses: huanlongAI/sentinel-shared/.github/workflows/consistency-sentinel.yml@main
         secrets:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_API_KEY: __EXPR_ANTHROPIC_API_KEY__
+          HEIYUCODE_AUTH_TOKEN: __EXPR_HEIYUCODE_AUTH_TOKEN__
+          HEIYUCODE_API_KEY: __EXPR_HEIYUCODE_API_KEY__
         with:
-          skip_llm: ${{ github.event.inputs.skip_llm || 'false' }}
+          skip_llm: __EXPR_SKIP_LLM__
+          llm_provider: auto
+          heiyucode_base_url: __EXPR_HEIYUCODE_BASE_URL__
+          heiyucode_model: __EXPR_HEIYUCODE_MODEL__
 
 jobs:
   sync-check:
@@ -62,6 +67,17 @@ jobs:
           SKIPPED=""
           DRY_RUN="${{ inputs.dry_run || 'true' }}"
           REPORT=""
+
+          gha_expr() {
+            printf '$''{{ %s }}' "$1"
+          }
+
+          CANONICAL_BODY="${CANONICAL_BODY//__EXPR_ANTHROPIC_API_KEY__/$(gha_expr 'secrets.ANTHROPIC_API_KEY')}"
+          CANONICAL_BODY="${CANONICAL_BODY//__EXPR_HEIYUCODE_AUTH_TOKEN__/$(gha_expr 'secrets.HEIYUCODE_AUTH_TOKEN')}"
+          CANONICAL_BODY="${CANONICAL_BODY//__EXPR_HEIYUCODE_API_KEY__/$(gha_expr 'secrets.HEIYUCODE_API_KEY')}"
+          CANONICAL_BODY="${CANONICAL_BODY//__EXPR_SKIP_LLM__/$(gha_expr "fromJSON(github.event.inputs.skip_llm || 'false')")}"
+          CANONICAL_BODY="${CANONICAL_BODY//__EXPR_HEIYUCODE_BASE_URL__/$(gha_expr "vars.HEIYUCODE_BASE_URL || 'https://www.heiyucode.com'")}"
+          CANONICAL_BODY="${CANONICAL_BODY//__EXPR_HEIYUCODE_MODEL__/$(gha_expr "vars.HEIYUCODE_MODEL || ''")}"
 
           # Normalize canonical: strip comments, leading/trailing whitespace,
           # collapse whitespace for comparison

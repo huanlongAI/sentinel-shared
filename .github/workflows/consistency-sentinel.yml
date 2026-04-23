@@ -13,8 +13,27 @@ on:
         required: false
         default: 'false'
         type: string
+      llm_provider:
+        description: 'LLM provider: auto, anthropic, heiyucode'
+        required: false
+        default: 'auto'
+        type: string
+      heiyucode_base_url:
+        description: 'HeiyuCode Claude Code client base URL'
+        required: false
+        default: 'https://www.heiyucode.com'
+        type: string
+      heiyucode_model:
+        description: 'HeiyuCode model override'
+        required: false
+        default: ''
+        type: string
     secrets:
       ANTHROPIC_API_KEY:
+        required: false
+      HEIYUCODE_AUTH_TOKEN:
+        required: false
+      HEIYUCODE_API_KEY:
         required: false
 
 
@@ -84,6 +103,11 @@ jobs:
         if: always() && inputs.skip_llm != 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          HEIYUCODE_AUTH_TOKEN: ${{ secrets.HEIYUCODE_AUTH_TOKEN }}
+          HEIYUCODE_API_KEY: ${{ secrets.HEIYUCODE_API_KEY }}
+          HEIYUCODE_BASE_URL: ${{ inputs.heiyucode_base_url }}
+          HEIYUCODE_MODEL: ${{ inputs.heiyucode_model }}
+          SENTINEL_LLM_PROVIDER: ${{ inputs.llm_provider }}
         run: .sentinel-shared/scripts/llm-review.sh
 
       # ---- 判定聚合 ----

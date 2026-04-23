@@ -54,11 +54,13 @@ jobs:
     steps:
       - name: Determine trigger context
         id: context
+        env:
+          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "reason=${{ inputs.reason }}" >> "$GITHUB_OUTPUT"
           else
-            COMMIT_MSG=$(echo "${{ github.event.head_commit.message }}" | head -1)
+            COMMIT_MSG=$(echo "$HEAD_COMMIT_MESSAGE" | head -1)
             echo "reason=Auto-cascade: ${COMMIT_MSG}" >> "$GITHUB_OUTPUT"
           fi
           echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
