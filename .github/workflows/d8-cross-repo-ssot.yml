@@ -1,0 +1,94 @@
+name: Sentinel D-8 Cross-Repo SSOT
+
+on:
+  workflow_call:
+    inputs:
+      upstream_repo:
+        type: string
+        required: false
+        default: huanlongAI/guanghe
+      downstream_repo:
+        type: string
+        required: true
+      max_allowed_drift_0x:
+        type: number
+        required: false
+        default: 0
+      max_allowed_drift_1x_plus:
+        type: number
+        required: false
+        default: 1
+    secrets:
+      PAT_DOWNSTREAM_READ:
+        required: false
+  workflow_dispatch:
+    inputs:
+      upstream_repo:
+        description: Upstream repository
+        type: string
+        required: false
+        default: huanlongAI/guanghe
+      downstream_repo:
+        description: Downstream repository
+        type: string
+        required: true
+        default: huanlongAI/super-founder
+      max_allowed_drift_0x:
+        description: Maximum allowed minor drift for 0.x upstreams
+        type: number
+        required: false
+        default: 0
+      max_allowed_drift_1x_plus:
+        description: Maximum allowed minor drift for 1.x+ upstreams
+        type: number
+        required: false
+        default: 1
+
+jobs:
+  d8-cross-repo-ssot:
+    name: D-8 cross-repo SSOT
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout upstream repository
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ inputs.upstream_repo }}
+          path: upstream
+          fetch-depth: 0
+          token: ${{ secrets.PAT_DOWNSTREAM_READ || github.token }}
+
+      - name: Checkout downstream repository
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ inputs.downstream_repo }}
+          path: downstream
+          fetch-depth: 0
+          token: ${{ secrets.PAT_DOWNSTREAM_READ || github.token }}
+
+      - name: Checkout shared sentinel scripts
+        uses: actions/checkout@v5
+        with:
+          repository: huanlongAI/sentinel-shared
+          path: .sentinel-shared
+          token: ${{ github.token }}
+
+      - name: Run D-8 cross-repo SSOT check
+        env:
+          UPSTREAM_DIR: upstream
+          DOWNSTREAM_DIR: downstream
+          UPSTREAM_NAME: ${{ inputs.upstream_repo }}
+          DOWNSTREAM_NAME: ${{ inputs.downstream_repo }}
+          MAX_ALLOWED_DRIFT_0X: ${{ inputs.max_allowed_drift_0x }}
+          MAX_ALLOWED_DRIFT_1X_PLUS: ${{ inputs.max_allowed_drift_1x_plus }}
+        run: |
+          set -euo pipefail
+          chmod +x .sentinel-shared/.sentinel/checks/d8-cross-repo-ssot.sh
+          .sentinel-shared/.sentinel/checks/d8-cross-repo-ssot.sh
+
+      - name: Upload D-8 result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: d8-cross-repo-ssot-${{ github.run_id }}
+          path: .sentinel/results/
+          retention-days: 90

@@ -1,0 +1,23 @@
+schema_version: sentinel.d8-downstream-registry.v0.1
+upstream:
+  guanghe:
+    repo: huanlongAI/guanghe
+    tag_source: CHANGELOG.md
+    package_name: guanghe
+    max_allowed_drift:
+      "0.x": 0
+      "1.x+": 1
+downstream:
+  - repo: huanlongAI/super-founder
+    package_swift_path: Package.swift
+    dependency_type: semver
+    expected_field_pattern: '\.package\(url: ".*guanghe\.git".*(from|exact): "([^"]+)"\)'
+    status: active
+  - repo: huanlongAI/tzhOS-App
+    package_swift_path: Package.swift
+    dependency_type: path
+    status: d8-skipped-handled-by-d9
+  - repo: huanlongAI/hl-console-native
+    package_swift_path: Package.swift
+    dependency_type: path
+    status: d8-skipped-handled-by-d9

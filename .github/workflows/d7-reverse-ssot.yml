@@ -1,0 +1,36 @@
+name: Sentinel D-7 Reverse SSOT
+
+on:
+  workflow_call: {}
+  workflow_dispatch: {}
+
+jobs:
+  d7-reverse-ssot:
+    name: D-7 reverse SSOT
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Checkout shared sentinel scripts
+        uses: actions/checkout@v5
+        with:
+          repository: huanlongAI/sentinel-shared
+          path: .sentinel-shared
+          token: ${{ github.token }}
+
+      - name: Run D-7 reverse SSOT check
+        run: |
+          set -euo pipefail
+          chmod +x .sentinel-shared/.sentinel/checks/d7-reverse-ssot.sh
+          .sentinel-shared/.sentinel/checks/d7-reverse-ssot.sh
+
+      - name: Upload D-7 result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: d7-reverse-ssot-${{ github.run_id }}
+          path: .sentinel/results/
+          retention-days: 90
