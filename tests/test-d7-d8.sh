@@ -72,7 +72,7 @@ import PackageDescription
 let package = Package(
     name: "Downstream",
     dependencies: [
-        .package(url: "https://github.com/tongzhenghui/guanghe.git", from: "${version}")
+        .package(url: "https://github.com/huanlongAI/guanghe.git", from: "${version}")
     ]
 )
 EOF
