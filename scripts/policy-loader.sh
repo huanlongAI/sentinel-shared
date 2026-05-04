@@ -65,6 +65,39 @@ sentinel_repo_root() {
   git rev-parse --show-toplevel 2>/dev/null || pwd
 }
 
+sentinel_realpath() {
+  local path="$1"
+  local current target dir base depth
+
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "$path"
+    return
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$path"
+    return
+  fi
+
+  current="$path"
+  depth=0
+  while [ -L "$current" ]; do
+    depth=$((depth + 1))
+    if [ "$depth" -gt 40 ]; then
+      return 1
+    fi
+    target=$(readlink "$current") || return 1
+    case "$target" in
+      /*) current="$target" ;;
+      *) current="$(dirname "$current")/$target" ;;
+    esac
+  done
+
+  dir=$(dirname "$current")
+  base=$(basename "$current")
+  (cd "$dir" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$base")
+}
+
 sentinel_validate_policy_file() {
   local file="$1" display="${2:-$1}"
   local line line_no trimmed saw_root_key
@@ -111,7 +144,7 @@ sentinel_validate_policy_file() {
 
 sentinel_policy_file_for_config() {
   local config_file="$1"
-  local policy_ref policy_path repo_root
+  local policy_ref policy_path repo_root repo_root_real policy_path_real
 
   policy_ref=$(sentinel_yaml_get "$config_file" "policy_file" "")
   if [ -z "$policy_ref" ]; then
@@ -135,6 +168,10 @@ sentinel_policy_file_for_config() {
   esac
 
   repo_root=$(sentinel_repo_root)
+  repo_root_real=$(sentinel_realpath "$repo_root") || {
+    echo "::error::Unable to resolve repository root: ${repo_root}" >&2
+    return 1
+  }
   policy_path="${repo_root}/${policy_ref}"
 
   if [ ! -f "$policy_path" ]; then
@@ -142,8 +179,21 @@ sentinel_policy_file_for_config() {
     return 1
   fi
 
-  sentinel_validate_policy_file "$policy_path" "$policy_ref" || return 1
-  echo "$policy_path"
+  policy_path_real=$(sentinel_realpath "$policy_path") || {
+    echo "::error::Unable to resolve policy_file path: ${policy_ref} (resolved to ${policy_path})" >&2
+    return 1
+  }
+
+  case "$policy_path_real" in
+    "$repo_root_real"/*) ;;
+    *)
+      echo "::error::policy_file must stay within repository root: ${policy_ref} (resolved to ${policy_path_real}; repo root ${repo_root_real})" >&2
+      return 1
+      ;;
+  esac
+
+  sentinel_validate_policy_file "$policy_path_real" "$policy_ref" || return 1
+  echo "$policy_path_real"
 }
 
 sentinel_governance_source_file() {

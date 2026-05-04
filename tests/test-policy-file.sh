@@ -254,6 +254,116 @@ YAML
   pass "malformed policy_file fails clearly"
 }
 
+test_policy_file_parent_escape_is_rejected() {
+  local tmp repo
+  tmp="$(mktemp -d)"
+  repo="$tmp/repo"
+  init_repo "$repo"
+  write_base_config "$repo" <<'YAML'
+policy_file: ../outside-policy.yaml
+forbidden_terms:
+  - CONFIGTERM
+YAML
+  cat > "$tmp/outside-policy.yaml" <<'YAML'
+forbidden_terms:
+  - OUTSIDEBLOCK
+YAML
+  echo "clean" > "$repo/sample.md"
+  commit_all "$repo" "base"
+  echo "OUTSIDEBLOCK appears here" > "$repo/sample.md"
+  commit_all "$repo" "change"
+
+  run_script_capture "$repo" "$D2_SCRIPT"
+  if [ "$CODE" -eq 0 ]; then
+    fail "D-2 should reject policy_file that escapes repository root via .."
+  fi
+  assert_contains "$OUTPUT" "policy_file must stay within repository root"
+  assert_contains "$OUTPUT" "../outside-policy.yaml"
+  pass "policy_file parent-directory escape is rejected"
+}
+
+test_policy_file_symlink_escape_is_rejected() {
+  local tmp repo
+  tmp="$(mktemp -d)"
+  repo="$tmp/repo"
+  init_repo "$repo"
+  mkdir -p "$repo/governance"
+  write_base_config "$repo" <<'YAML'
+policy_file: governance/sentinel-policy.yaml
+forbidden_terms:
+  - CONFIGTERM
+YAML
+  cat > "$tmp/outside-policy.yaml" <<'YAML'
+forbidden_terms:
+  - OUTSIDEBLOCK
+YAML
+  ln -s "$tmp/outside-policy.yaml" "$repo/governance/sentinel-policy.yaml"
+  echo "clean" > "$repo/sample.md"
+  commit_all "$repo" "base"
+  echo "OUTSIDEBLOCK appears here" > "$repo/sample.md"
+  commit_all "$repo" "change"
+
+  run_script_capture "$repo" "$D2_SCRIPT"
+  if [ "$CODE" -eq 0 ]; then
+    fail "D-2 should reject policy_file symlink that escapes repository root"
+  fi
+  assert_contains "$OUTPUT" "policy_file must stay within repository root"
+  assert_contains "$OUTPUT" "governance/sentinel-policy.yaml"
+  pass "policy_file symlink escape is rejected"
+}
+
+test_absolute_policy_file_path_is_rejected() {
+  local tmp repo
+  tmp="$(mktemp -d)"
+  repo="$tmp/repo"
+  init_repo "$repo"
+  cat > "$tmp/outside-policy.yaml" <<'YAML'
+forbidden_terms:
+  - OUTSIDEBLOCK
+YAML
+  write_base_config "$repo" <<YAML
+policy_file: $tmp/outside-policy.yaml
+forbidden_terms:
+  - CONFIGTERM
+YAML
+  echo "clean" > "$repo/sample.md"
+  commit_all "$repo" "base"
+  echo "clean change" > "$repo/sample.md"
+  commit_all "$repo" "change"
+
+  run_script_capture "$repo" "$D2_SCRIPT"
+  if [ "$CODE" -eq 0 ]; then
+    fail "D-2 should reject absolute policy_file path"
+  fi
+  assert_contains "$OUTPUT" "policy_file must be repository-relative, not absolute"
+  assert_contains "$OUTPUT" "$tmp/outside-policy.yaml"
+  pass "absolute policy_file path is rejected"
+}
+
+test_non_yaml_policy_file_path_is_rejected() {
+  local tmp repo
+  tmp="$(mktemp -d)"
+  repo="$tmp/repo"
+  init_repo "$repo"
+  write_base_config "$repo" <<'YAML'
+policy_file: governance/sentinel-policy.txt
+forbidden_terms:
+  - CONFIGTERM
+YAML
+  echo "clean" > "$repo/sample.md"
+  commit_all "$repo" "base"
+  echo "clean change" > "$repo/sample.md"
+  commit_all "$repo" "change"
+
+  run_script_capture "$repo" "$D2_SCRIPT"
+  if [ "$CODE" -eq 0 ]; then
+    fail "D-2 should reject non-YAML policy_file path"
+  fi
+  assert_contains "$OUTPUT" "policy_file must be a YAML file (.yaml or .yml)"
+  assert_contains "$OUTPUT" "governance/sentinel-policy.txt"
+  pass "non-YAML policy_file path is rejected"
+}
+
 test_path_level_terminology_excludes_match_nested_paths() {
   local tmp repo
   tmp="$(mktemp -d)"
@@ -286,6 +396,10 @@ test_policy_file_loads_governance_files
 test_policy_file_loads_cascade_map
 test_missing_policy_file_fails_clearly
 test_malformed_policy_file_fails_clearly
+test_policy_file_parent_escape_is_rejected
+test_policy_file_symlink_escape_is_rejected
+test_absolute_policy_file_path_is_rejected
+test_non_yaml_policy_file_path_is_rejected
 test_path_level_terminology_excludes_match_nested_paths
 test_no_policy_file_preserves_config_only_forbidden_terms
 
