@@ -6,31 +6,18 @@ set -euo pipefail
 
 CONFIG_FILE="${CONFIG_FILE:-.sentinel/config.yaml}"
 RESULTS_DIR="${RESULTS_DIR:-.sentinel/results}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 mkdir -p "$RESULTS_DIR"
 
-# YAML value reader (no yq dependency)
-yaml_get() {
-  local file="$1" key="$2" default="${3:-}"
-  local val=$(grep -E "^\s*${key}:" "$file" 2>/dev/null | head -1 | sed 's/^[^:]*:\s*//' | sed 's/\s*#.*//' | tr -d '"' | tr -d "'")
-  echo "${val:-$default}"
-}
-
-# Parse nested YAML cascade_map into key=value pairs
-parse_cascade_map() {
-  local file="$1"
-  sed -n "/^\s*cascade_map:/,/^\s*[a-z]/p" "$file" 2>/dev/null | \
-    { grep -E "^\s+[^ :]+:\s+" || true; } | \
-    sed 's/^\s*//' | \
-    sed 's/:\s*/=/' | \
-    sed 's/["\x27]//g' | \
-    sed 's/[[:space:]]*$//'
-}
+# YAML/policy helpers (no yq dependency)
+# shellcheck source=scripts/policy-loader.sh
+source "$SCRIPT_DIR/policy-loader.sh"
 
 echo "D-3: Cascade integrity"
 
-# Read cascade rules from config
-CASCADE_MAP=$(parse_cascade_map "$CONFIG_FILE")
+# Read cascade rules from policy_file when present, otherwise config
+CASCADE_MAP=$(sentinel_governance_get_map "$CONFIG_FILE" "cascade_map")
 
 if [ -z "$CASCADE_MAP" ]; then
   echo "No cascade rules configured — PASS"

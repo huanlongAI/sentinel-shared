@@ -7,20 +7,13 @@ set -euo pipefail
 
 CONFIG_FILE="${CONFIG_FILE:-.sentinel/config.yaml}"
 RESULTS_DIR="${RESULTS_DIR:-.sentinel/results}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 mkdir -p "$RESULTS_DIR"
 
-# YAML helpers (no yq dependency)
-yaml_get() {
-  local file="$1" key="$2" default="${3:-}"
-  local val=$(grep -E "^\s*${key}:" "$file" 2>/dev/null | head -1 | sed 's/^[^:]*:\s*//' | sed 's/\s*#.*//' | tr -d '"' | tr -d "'")
-  echo "${val:-$default}"
-}
-
-yaml_get_array() {
-  local file="$1" key="$2"
-  sed -n "/^\s*${key}:/,/^\s*[a-z]/p" "$file" 2>/dev/null | { grep "^\s*-" || true; } | sed 's/^\s*-\s*//' | tr -d '"' | tr -d "'"
-}
+# YAML/policy helpers (no yq dependency)
+# shellcheck source=scripts/policy-loader.sh
+source "$SCRIPT_DIR/policy-loader.sh"
 
 echo "D-1: CHANGELOG check"
 
@@ -44,8 +37,8 @@ fi
 echo "Changed files in this commit/PR:"
 echo "$CHANGED_FILES" | head -20
 
-# Read governance files list from config
-GOVERNANCE_FILES=$(yaml_get_array "$CONFIG_FILE" "governance_files")
+# Read governance files list from policy_file when present, otherwise config
+GOVERNANCE_FILES=$(sentinel_governance_get_array "$CONFIG_FILE" "governance_files")
 if [ -z "$GOVERNANCE_FILES" ]; then
   echo "No governance_files configured — PASS"
   cat > "$RESULTS_DIR/d1-changelog.json" <<EOF
@@ -55,7 +48,7 @@ EOF
 fi
 
 # Read changelog file name (default: CHANGELOG.md)
-CHANGELOG_FILE=$(yaml_get "$CONFIG_FILE" "changelog_file" "CHANGELOG.md")
+CHANGELOG_FILE=$(sentinel_yaml_get "$CONFIG_FILE" "changelog_file" "CHANGELOG.md")
 
 # Check: did any governance file change?
 MODIFIED_GOV_FILES=()
