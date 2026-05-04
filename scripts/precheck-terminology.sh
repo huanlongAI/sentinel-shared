@@ -7,25 +7,18 @@ set -euo pipefail
 
 CONFIG_FILE="${CONFIG_FILE:-.sentinel/config.yaml}"
 RESULTS_DIR="${RESULTS_DIR:-.sentinel/results}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 mkdir -p "$RESULTS_DIR"
 
-# YAML helpers (no yq dependency)
-yaml_get() {
-  local file="$1" key="$2" default="${3:-}"
-  local val=$(grep -E "^\s*${key}:" "$file" 2>/dev/null | head -1 | sed 's/^[^:]*:\s*//' | sed 's/\s*#.*//' | tr -d '"' | tr -d "'")
-  echo "${val:-$default}"
-}
-
-yaml_get_array() {
-  local file="$1" key="$2"
-  sed -n "/^\s*${key}:/,/^\s*[a-z]/p" "$file" 2>/dev/null | { grep "^\s*-" || true; } | sed 's/^\s*-\s*//' | tr -d '"' | tr -d "'"
-}
+# YAML/policy helpers (no yq dependency)
+# shellcheck source=scripts/policy-loader.sh
+source "$SCRIPT_DIR/policy-loader.sh"
 
 echo "D-2: Terminology scan"
 
-# Read forbidden terms from config
-FORBIDDEN_TERMS=$(yaml_get_array "$CONFIG_FILE" "forbidden_terms")
+# Read forbidden terms from policy_file when present, otherwise config
+FORBIDDEN_TERMS=$(sentinel_governance_get_array "$CONFIG_FILE" "forbidden_terms")
 
 # Use defaults if not configured
 if [ -z "$FORBIDDEN_TERMS" ]; then
@@ -45,8 +38,8 @@ else
   echo "Read forbidden terms from config"
 fi
 
-# Read exclude patterns from config
-EXCLUDE_PATTERNS=$(yaml_get_array "$CONFIG_FILE" "terminology_exclude_patterns")
+# Read exclude patterns from policy_file when present, otherwise config
+EXCLUDE_PATTERNS=$(sentinel_governance_get_array "$CONFIG_FILE" "terminology_exclude_patterns")
 if [ -n "$EXCLUDE_PATTERNS" ]; then
   echo "Exclude patterns loaded: $(echo "$EXCLUDE_PATTERNS" | wc -l | tr -d ' ') patterns"
 fi
@@ -54,8 +47,9 @@ fi
 # Function: check if a filename matches any exclude pattern
 should_exclude() {
   local filepath="$1"
-  local basename
+  local basename normalized_path normalized_pattern
   basename=$(basename "$filepath")
+  normalized_path="${filepath#./}"
   
   if [ -z "$EXCLUDE_PATTERNS" ]; then
     return 1  # no patterns = don't exclude
@@ -63,7 +57,14 @@ should_exclude() {
   
   while IFS= read -r pattern; do
     [ -z "$pattern" ] && continue
+    normalized_pattern="${pattern#./}"
     # Use bash pattern matching (supports * and ? globs)
+    # Match repository-relative paths first for path-aware excludes.
+    # shellcheck disable=SC2254
+    case "$normalized_path" in
+      $normalized_pattern) return 0 ;;  # path match = exclude
+    esac
+    # Preserve legacy basename-style patterns.
     # shellcheck disable=SC2254
     case "$basename" in
       $pattern) return 0 ;;  # match = exclude
