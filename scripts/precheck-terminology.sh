@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # D-2: Terminology scan
-# Reads forbidden terms from .sentinel/config.yaml
+# Reads forbidden terms from policy_file when present, otherwise .sentinel/config.yaml
 # Supports terminology_exclude_patterns to skip governance spec files
 
 CONFIG_FILE="${CONFIG_FILE:-.sentinel/config.yaml}"
@@ -18,7 +18,21 @@ source "$SCRIPT_DIR/policy-loader.sh"
 echo "D-2: Terminology scan"
 
 # Read forbidden terms from policy_file when present, otherwise config
-FORBIDDEN_TERMS=$(sentinel_governance_get_array "$CONFIG_FILE" "forbidden_terms")
+FORBIDDEN_TERMS_SOURCE_FILE=$(sentinel_governance_source_file "$CONFIG_FILE" "forbidden_terms")
+FORBIDDEN_TERMS=$(sentinel_yaml_get_array "$FORBIDDEN_TERMS_SOURCE_FILE" "forbidden_terms")
+
+display_repo_relative_path() {
+  local path="$1"
+  local repo_root repo_root_real
+  repo_root=$(sentinel_repo_root)
+  repo_root_real=$(sentinel_realpath "$repo_root" 2>/dev/null || echo "$repo_root")
+
+  case "$path" in
+    "$repo_root"/*) echo "${path#"$repo_root"/}" ;;
+    "$repo_root_real"/*) echo "${path#"$repo_root_real"/}" ;;
+    *) echo "$path" ;;
+  esac
+}
 
 # Use defaults if not configured
 if [ -z "$FORBIDDEN_TERMS" ]; then
@@ -35,7 +49,11 @@ TERMS
 )
   echo "Using default forbidden terms"
 else
-  echo "Read forbidden terms from config"
+  if [ "$FORBIDDEN_TERMS_SOURCE_FILE" = "$CONFIG_FILE" ]; then
+    echo "Read forbidden terms from config"
+  else
+    echo "Read forbidden terms from policy_file: $(display_repo_relative_path "$FORBIDDEN_TERMS_SOURCE_FILE")"
+  fi
 fi
 
 # Read exclude patterns from policy_file when present, otherwise config

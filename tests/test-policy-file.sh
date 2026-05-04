@@ -88,6 +88,7 @@ YAML
   if [ "$CODE" -eq 0 ]; then
     fail "D-2 should fail on config-only forbidden_terms"
   fi
+  assert_contains "$OUTPUT" "Read forbidden terms from config"
   assert_file_contains "$repo/.sentinel/results/d2-terminology.json" "CONFIGONLYBLOCK"
   pass "no policy_file preserves config-only forbidden_terms behavior"
 }
@@ -114,6 +115,7 @@ YAML
   if [ "$CODE" -eq 0 ]; then
     fail "D-2 should fail on forbidden_terms loaded from policy_file"
   fi
+  assert_contains "$OUTPUT" "Read forbidden terms from policy_file: governance/sentinel-policy.yaml"
   assert_file_contains "$repo/.sentinel/results/d2-terminology.json" "POLICYBLOCK"
   pass "policy_file loads forbidden_terms"
 }
