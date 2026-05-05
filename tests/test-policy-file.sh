@@ -392,6 +392,314 @@ YAML
   pass "path-level terminology excludes match nested paths"
 }
 
+test_d3_cascade_block_list_full_tzhOS_shape() {
+  local tmp repo result line_count
+  tmp="$(mktemp -d)"
+  repo="$tmp/repo"
+  init_repo "$repo"
+  write_base_config "$repo" <<'YAML'
+cascade_map:
+  "MIRA-001.md":
+    - "SAAC-001.md"
+    - "BOOTSTRAP.md"
+    - "CONTEXT.md"
+    - "CONSEN-SPEC-001.md"
+  "SAAC-001.md":
+    - "CONTEXT.md"
+    - "BOOTSTRAP.md"
+  "00-CHARTER/mission-telos.md":
+    - "CONTEXT.md"
+    - "BOOTSTRAP.md"
+  "00-CHARTER/governance.md":
+    - "CONTEXT.md"
+    - "BOOTSTRAP.md"
+    - "RULINGS.md"
+    - "CHANGELOG.md"
+  "00-CHARTER/collaboration-standard.md":
+    - "CONTEXT.md"
+    - "BOOTSTRAP.md"
+  "00-CHARTER/interface-standard.md":
+    - "CONTEXT.md"
+    - "BOOTSTRAP.md"
+    - "20-DIGITAL-WORKBENCH/templates/interface-declaration.template.md"
+  "00-CHARTER/playbooks/decision-gate.md":
+    - "CONTEXT.md"
+    - "RULINGS.md"
+  "00-CHARTER/playbooks/monthly-audit-review.md":
+    - "CONTEXT.md"
+  "40-VAH/VAH-001.md":
+    - "INDEX.md"
+    - "MASTER-OVERVIEW.md"
+    - "CONTEXT.md"
+    - "ai/VAH-METHODOLOGY.md"
+    - "40-VAH/GATE-EVIDENCE-ENVELOPE-v0.md"
+  "ai/VAH-METHODOLOGY.md":
+    - "INDEX.md"
+    - "MASTER-OVERVIEW.md"
+    - "CONTEXT.md"
+    - "ai/PLAYBOOK.md"
+    - "40-VAH/VAH-001.md"
+    - "40-VAH/GATE-EVIDENCE-ENVELOPE-v0.md"
+  "40-VAH/GATE-EVIDENCE-ENVELOPE-v0.md":
+    - "INDEX.md"
+    - "RULINGS.md"
+    - "40-VAH/VAH-001.md"
+    - "ai/VAH-METHODOLOGY.md"
+YAML
+
+  source "$ROOT_DIR/scripts/policy-loader.sh"
+  result=$(sentinel_yaml_get_map "$repo/.sentinel/config.yaml" "cascade_map")
+  line_count=$(printf '%s\n' "$result" | awk 'NF { count++ } END { print count + 0 }')
+  [ "$line_count" -eq 35 ] || fail "expected 35 cascade edges, got $line_count"
+  assert_contains "$result" "MIRA-001.md=SAAC-001.md"
+  assert_contains "$result" "00-CHARTER/interface-standard.md=20-DIGITAL-WORKBENCH/templates/interface-declaration.template.md"
+  assert_contains "$result" "40-VAH/GATE-EVIDENCE-ENVELOPE-v0.md=ai/VAH-METHODOLOGY.md"
+  if printf '%s\n' "$result" | grep -Eq '=$'; then
+    fail "cascade block-list output must not contain empty targets"
+  fi
+  if printf '%s\n' "$result" | grep -Ev '^[^=]+=[^=]+$' | grep -q .; then
+    fail "cascade block-list output contains malformed edge"
+  fi
+  rm -rf "$tmp"
+  pass "cascade_map block-style list expands tzhOS 35 edges"
+}
+
+test_d3_cascade_flow_scalar_hl_contracts_shape() {
+  local tmp repo result line_count
+  tmp="$(mktemp -d)"
+  repo="$tmp/repo"
+  init_repo "$repo"
+  write_base_config "$repo" <<'YAML'
+cascade_map:
+  "TRACEABILITY.yaml": "CHANGELOG.md"
+  "governance/RULINGS.md": "CHANGELOG.md"
+YAML
+
+  source "$ROOT_DIR/scripts/policy-loader.sh"
+  result=$(sentinel_yaml_get_map "$repo/.sentinel/config.yaml" "cascade_map")
+  line_count=$(printf '%s\n' "$result" | awk 'NF { count++ } END { print count + 0 }')
+  [ "$line_count" -eq 2 ] || fail "expected 2 flow scalar edges, got $line_count"
+  assert_contains "$result" "TRACEABILITY.yaml=CHANGELOG.md"
+  assert_contains "$result" "governance/RULINGS.md=CHANGELOG.md"
+  rm -rf "$tmp"
+  pass "cascade_map flow-style scalar remains compatible"
+}
+
+test_d3_cascade_inline_empty_map() {
+  local tmp repo result line_count
+  tmp="$(mktemp -d)"
+  repo="$tmp/repo"
+  init_repo "$repo"
+  write_base_config "$repo" <<'YAML'
+cascade_map: {}
+YAML
+
+  source "$ROOT_DIR/scripts/policy-loader.sh"
+  result=$(sentinel_yaml_get_map "$repo/.sentinel/config.yaml" "cascade_map")
+  line_count=$(printf '%s\n' "$result" | awk 'NF { count++ } END { print count + 0 }')
+  [ "$line_count" -eq 0 ] || fail "expected empty inline map to produce 0 edges, got $line_count"
+  rm -rf "$tmp"
+  pass "cascade_map inline empty map remains empty"
+}
+
+test_d3_cascade_missing_section() {
+  local tmp repo result line_count
+  tmp="$(mktemp -d)"
+  repo="$tmp/repo"
+  init_repo "$repo"
+  write_base_config "$repo" <<'YAML'
+forbidden_terms:
+  - MISSINGSECTIONTERM
+YAML
+
+  source "$ROOT_DIR/scripts/policy-loader.sh"
+  result=$(sentinel_yaml_get_map "$repo/.sentinel/config.yaml" "cascade_map")
+  line_count=$(printf '%s\n' "$result" | awk 'NF { count++ } END { print count + 0 }')
+  [ "$line_count" -eq 0 ] || fail "expected missing cascade_map section to produce 0 edges, got $line_count"
+  rm -rf "$tmp"
+  pass "missing cascade_map section remains empty"
+}
+
+test_d3_cascade_inline_empty_list_regression() {
+  local tmp repo result line_count
+  tmp="$(mktemp -d)"
+  repo="$tmp/repo"
+  init_repo "$repo"
+  write_base_config "$repo" <<'YAML'
+cascade_map:
+  "FOO.md": []
+YAML
+
+  source "$ROOT_DIR/scripts/policy-loader.sh"
+  result=$(sentinel_yaml_get_map "$repo/.sentinel/config.yaml" "cascade_map")
+  line_count=$(printf '%s\n' "$result" | awk 'NF { count++ } END { print count + 0 }')
+  [ "$line_count" -eq 0 ] || fail "expected inline empty list to produce 0 edges, got $line_count"
+  rm -rf "$tmp"
+  pass "cascade_map inline empty list does not emit false target"
+}
+
+test_d2_exclude_slash_zero_depth() {
+  local tmp repo
+  tmp="$(mktemp -d)"
+  repo="$tmp/repo"
+  init_repo "$repo"
+  mkdir -p "$repo/40-VAH"
+  write_base_config "$repo" <<'YAML'
+forbidden_terms:
+  - PATHBLOCK
+terminology_exclude_patterns:
+  - 40-VAH/**/*.md
+YAML
+  echo "clean" > "$repo/40-VAH/foo.md"
+  commit_all "$repo" "base"
+  echo "PATHBLOCK intentionally excluded" > "$repo/40-VAH/foo.md"
+  commit_all "$repo" "change zero-depth excluded file"
+
+  run_script_capture "$repo" "$D2_SCRIPT"
+  if [ "$CODE" -ne 0 ]; then
+    echo "$OUTPUT" >&2
+    fail "D-2 should pass when slash pattern excludes zero-depth path"
+  fi
+  assert_contains "$OUTPUT" "Excluded 1 files by terminology_exclude_patterns"
+  rm -rf "$tmp"
+  pass "terminology slash pattern excludes zero-depth path"
+}
+
+test_d2_exclude_slash_multi_depth() {
+  local tmp repo
+  tmp="$(mktemp -d)"
+  repo="$tmp/repo"
+  init_repo "$repo"
+  mkdir -p "$repo/40-VAH/observations"
+  write_base_config "$repo" <<'YAML'
+forbidden_terms:
+  - PATHBLOCK
+terminology_exclude_patterns:
+  - 40-VAH/**/*.md
+YAML
+  echo "clean" > "$repo/40-VAH/observations/bar.md"
+  commit_all "$repo" "base"
+  echo "PATHBLOCK intentionally excluded" > "$repo/40-VAH/observations/bar.md"
+  commit_all "$repo" "change multi-depth excluded file"
+
+  run_script_capture "$repo" "$D2_SCRIPT"
+  if [ "$CODE" -ne 0 ]; then
+    echo "$OUTPUT" >&2
+    fail "D-2 should pass when slash pattern excludes multi-depth path"
+  fi
+  assert_contains "$OUTPUT" "Excluded 1 files by terminology_exclude_patterns"
+  rm -rf "$tmp"
+  pass "terminology slash pattern excludes multi-depth path"
+}
+
+test_d2_exclude_basename_legacy_anywhere() {
+  local tmp repo
+  tmp="$(mktemp -d)"
+  repo="$tmp/repo"
+  init_repo "$repo"
+  mkdir -p "$repo/docs"
+  write_base_config "$repo" <<'YAML'
+forbidden_terms:
+  - BASEBLOCK
+terminology_exclude_patterns:
+  - "*-rules.md"
+YAML
+  echo "clean" > "$repo/docs/lint-rules.md"
+  commit_all "$repo" "base"
+  echo "BASEBLOCK intentionally excluded" > "$repo/docs/lint-rules.md"
+  commit_all "$repo" "change basename excluded file"
+
+  run_script_capture "$repo" "$D2_SCRIPT"
+  if [ "$CODE" -ne 0 ]; then
+    echo "$OUTPUT" >&2
+    fail "D-2 should preserve basename glob excludes in nested directories"
+  fi
+  assert_contains "$OUTPUT" "Excluded 1 files by terminology_exclude_patterns"
+  rm -rf "$tmp"
+  pass "terminology basename glob excludes nested filename"
+}
+
+test_d2_exclude_basename_anchor_anywhere() {
+  local tmp repo
+  tmp="$(mktemp -d)"
+  repo="$tmp/repo"
+  init_repo "$repo"
+  mkdir -p "$repo/nested"
+  write_base_config "$repo" <<'YAML'
+forbidden_terms:
+  - BASEBLOCK
+terminology_exclude_patterns:
+  - AI_MEMORY.md
+YAML
+  echo "clean" > "$repo/nested/AI_MEMORY.md"
+  commit_all "$repo" "base"
+  echo "BASEBLOCK intentionally excluded" > "$repo/nested/AI_MEMORY.md"
+  commit_all "$repo" "change basename anchored file"
+
+  run_script_capture "$repo" "$D2_SCRIPT"
+  if [ "$CODE" -ne 0 ]; then
+    echo "$OUTPUT" >&2
+    fail "D-2 should preserve exact basename excludes in nested directories"
+  fi
+  assert_contains "$OUTPUT" "Excluded 1 files by terminology_exclude_patterns"
+  rm -rf "$tmp"
+  pass "terminology exact basename excludes nested filename"
+}
+
+test_d2_exclude_no_match() {
+  local tmp repo
+  tmp="$(mktemp -d)"
+  repo="$tmp/repo"
+  init_repo "$repo"
+  mkdir -p "$repo/40-PPR"
+  write_base_config "$repo" <<'YAML'
+forbidden_terms:
+  - PATHBLOCK
+terminology_exclude_patterns:
+  - 40-VAH/**/*.md
+YAML
+  echo "clean" > "$repo/40-PPR/PPR.md"
+  commit_all "$repo" "base"
+  echo "PATHBLOCK should not be excluded" > "$repo/40-PPR/PPR.md"
+  commit_all "$repo" "change non-matching path"
+
+  run_script_capture "$repo" "$D2_SCRIPT"
+  if [ "$CODE" -eq 0 ]; then
+    fail "D-2 should fail when slash pattern does not match changed file"
+  fi
+  assert_file_contains "$repo/.sentinel/results/d2-terminology.json" "PATHBLOCK"
+  rm -rf "$tmp"
+  pass "terminology slash pattern does not exclude unrelated path"
+}
+
+test_d2_exclude_path_basename_conflict_either_wins() {
+  local tmp repo
+  tmp="$(mktemp -d)"
+  repo="$tmp/repo"
+  init_repo "$repo"
+  mkdir -p "$repo/40-VAH"
+  write_base_config "$repo" <<'YAML'
+forbidden_terms:
+  - PATHBLOCK
+terminology_exclude_patterns:
+  - 40-VAH/**/*.md
+  - "*-rules.md"
+YAML
+  echo "clean" > "$repo/40-VAH/foo-rules.md"
+  commit_all "$repo" "base"
+  echo "PATHBLOCK intentionally excluded" > "$repo/40-VAH/foo-rules.md"
+  commit_all "$repo" "change path and basename excluded file"
+
+  run_script_capture "$repo" "$D2_SCRIPT"
+  if [ "$CODE" -ne 0 ]; then
+    echo "$OUTPUT" >&2
+    fail "D-2 should exclude when either slash pattern or basename pattern matches"
+  fi
+  assert_contains "$OUTPUT" "Excluded 1 files by terminology_exclude_patterns"
+  rm -rf "$tmp"
+  pass "terminology excludes when path or basename pattern matches"
+}
+
 test_policy_file_loads_forbidden_terms
 test_policy_file_loads_terminology_exclude_patterns_with_config_term_fallback
 test_policy_file_loads_governance_files
@@ -404,5 +712,16 @@ test_absolute_policy_file_path_is_rejected
 test_non_yaml_policy_file_path_is_rejected
 test_path_level_terminology_excludes_match_nested_paths
 test_no_policy_file_preserves_config_only_forbidden_terms
+test_d3_cascade_block_list_full_tzhOS_shape
+test_d3_cascade_flow_scalar_hl_contracts_shape
+test_d3_cascade_inline_empty_map
+test_d3_cascade_missing_section
+test_d3_cascade_inline_empty_list_regression
+test_d2_exclude_slash_zero_depth
+test_d2_exclude_slash_multi_depth
+test_d2_exclude_basename_legacy_anywhere
+test_d2_exclude_basename_anchor_anywhere
+test_d2_exclude_no_match
+test_d2_exclude_path_basename_conflict_either_wins
 
 echo "All ${PASS_COUNT} policy_file tests passed"
