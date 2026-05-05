@@ -47,17 +47,53 @@ sentinel_yaml_get_array() {
 sentinel_yaml_get_map() {
   local file="$1" key="$2"
   awk -v key="$key" '
-    $0 ~ "^[[:space:]]*" key ":[[:space:]]*($|#)" { in_map=1; next }
+    function emit(k, v) {
+      sub(/^[[:space:]]+/, "", v)
+      sub(/[[:space:]]+$/, "", v)
+      gsub(/["'\''"]/, "", v)
+      if (v == "[]" || v == "{}") return
+      if (k != "" && v != "") print k "=" v
+    }
+
+    $0 ~ "^[[:space:]]*" key ":[[:space:]]*($|#)" { in_map=1; cur_key=""; cur_indent=-1; next }
     in_map && $0 ~ "^[A-Za-z_][A-Za-z0-9_-]*:[[:space:]]*" { exit }
-    in_map && $0 ~ "^[[:space:]]+[^#[:space:]][^:]*:[[:space:]]*" {
+
+    in_map && $0 ~ "^[[:space:]]+[^#[:space:]-][^:]*:[[:space:]]*(#|$)" {
+      line=$0
+      sub(/[[:space:]]+#.*$/, "", line)
+      match(line, /^[[:space:]]+/); cur_indent=RLENGTH
+      sub(/^[[:space:]]+/, "", line)
+      sub(/:[[:space:]]*$/, "", line)
+      gsub(/["'\''"]/, "", line)
+      cur_key=line
+      next
+    }
+
+    in_map && cur_key != "" && $0 ~ "^[[:space:]]+-[[:space:]]+" {
+      line=$0
+      match(line, /^[[:space:]]+/)
+      if (RLENGTH <= cur_indent) { cur_key=""; next }
+      sub(/^[[:space:]]+-[[:space:]]+/, "", line)
+      sub(/[[:space:]]+#.*$/, "", line)
+      emit(cur_key, line)
+      next
+    }
+
+    in_map && $0 ~ "^[[:space:]]+[^#[:space:]-][^:]*:[[:space:]]+[^[:space:]]" {
       line=$0
       sub(/^[[:space:]]+/, "", line)
       sub(/[[:space:]]+#.*$/, "", line)
       gsub(/["'\''"]/, "", line)
       sub(/[[:space:]]*:[[:space:]]*/, "=", line)
-      sub(/[[:space:]]+$/, "", line)
+      cur_key=""
+      val=line; sub(/^[^=]+=/, "", val)
+      if (val == "[]" || val == "{}") next
       print line
+      next
     }
+
+    in_map && /^[^[:space:]]/ { exit }
+    in_map && cur_key != "" && /^$/ { cur_key="" }
   ' "$file" 2>/dev/null || true
 }
 

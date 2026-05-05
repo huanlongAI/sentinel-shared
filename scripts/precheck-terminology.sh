@@ -76,17 +76,20 @@ should_exclude() {
   while IFS= read -r pattern; do
     [ -z "$pattern" ] && continue
     normalized_pattern="${pattern#./}"
-    # Use bash pattern matching (supports * and ? globs)
-    # Match repository-relative paths first for path-aware excludes.
-    # shellcheck disable=SC2254
-    case "$normalized_path" in
-      $normalized_pattern) return 0 ;;  # path match = exclude
-    esac
-    # Preserve legacy basename-style patterns.
-    # shellcheck disable=SC2254
-    case "$basename" in
-      $pattern) return 0 ;;  # match = exclude
-    esac
+
+    if [[ "$normalized_pattern" == */* ]]; then
+      # Path-aware: use git pathspec :(glob) to honor `**` recursion incl. zero-depth.
+      if git ls-files --error-unmatch -- ":(glob)${normalized_pattern}" 2>/dev/null \
+           | grep -Fxq -- "$normalized_path"; then
+        return 0
+      fi
+    else
+      # Legacy basename: preserve existing semantics for `*-rules.md` / `AI_MEMORY.md` / etc.
+      # shellcheck disable=SC2254
+      case "$basename" in
+        $pattern) return 0 ;;  # match = exclude
+      esac
+    fi
   done <<< "$EXCLUDE_PATTERNS"
   
   return 1  # no match = don't exclude
