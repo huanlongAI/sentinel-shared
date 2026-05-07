@@ -700,6 +700,32 @@ YAML
   pass "terminology excludes when path or basename pattern matches"
 }
 
+test_changelog_preview_handles_large_change_sets_without_broken_pipe() {
+  local tmp repo i
+  tmp="$(mktemp -d)"
+  repo="$tmp/repo"
+  init_repo "$repo"
+  write_base_config "$repo" <<'YAML'
+governance_files:
+  - AGENTS.md
+YAML
+  echo "base" > "$repo/README.md"
+  commit_all "$repo" "base"
+
+  for i in $(seq 1 12000); do
+    printf 'change %s\n' "$i" > "$repo/changed-file-${i}-with-a-long-path-segment-to-exercise-the-preview-pipe-buffer-and-reproduce-sigpipe.txt"
+  done
+  commit_all "$repo" "large file set"
+
+  run_script_capture "$repo" "$D1_SCRIPT"
+  if [ "$CODE" -ne 0 ]; then
+    echo "$OUTPUT" >&2
+    fail "D-1 should not fail while previewing large changed file sets"
+  fi
+  assert_contains "$OUTPUT" "No governance files modified in this change"
+  pass "D-1 preview handles large changed file sets without broken pipe"
+}
+
 test_policy_file_loads_forbidden_terms
 test_policy_file_loads_terminology_exclude_patterns_with_config_term_fallback
 test_policy_file_loads_governance_files
@@ -723,5 +749,6 @@ test_d2_exclude_basename_legacy_anywhere
 test_d2_exclude_basename_anchor_anywhere
 test_d2_exclude_no_match
 test_d2_exclude_path_basename_conflict_either_wins
+test_changelog_preview_handles_large_change_sets_without_broken_pipe
 
 echo "All ${PASS_COUNT} policy_file tests passed"
