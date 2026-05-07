@@ -35,7 +35,7 @@ EOF
 fi
 
 echo "Changed files in this commit/PR:"
-echo "$CHANGED_FILES" | head -20
+sed -n '1,20p' <<< "$CHANGED_FILES"
 
 # Read governance files list from policy_file when present, otherwise config
 GOVERNANCE_FILES=$(sentinel_governance_get_array "$CONFIG_FILE" "governance_files")
@@ -54,7 +54,7 @@ CHANGELOG_FILE=$(sentinel_yaml_get "$CONFIG_FILE" "changelog_file" "CHANGELOG.md
 MODIFIED_GOV_FILES=()
 while IFS= read -r gov_file; do
   [ -z "$gov_file" ] && continue
-  if echo "$CHANGED_FILES" | grep -q "^${gov_file}$"; then
+  if grep -qxF "$gov_file" <<< "$CHANGED_FILES"; then
     MODIFIED_GOV_FILES+=("$gov_file")
   fi
 done <<< "$GOVERNANCE_FILES"
@@ -67,11 +67,11 @@ if [ ${#MODIFIED_GOV_FILES[@]} -eq 0 ]; then
 else
   echo "Modified governance files: ${MODIFIED_GOV_FILES[*]}"
   # Check if CHANGELOG was also updated
-  if echo "$CHANGED_FILES" | grep -q "^${CHANGELOG_FILE}$"; then
+  if grep -qxF "$CHANGELOG_FILE" <<< "$CHANGED_FILES"; then
     echo "✓ ${CHANGELOG_FILE} was updated alongside governance changes"
   else
     # Also accept RULINGS.md update as changelog equivalent (at any path)
-    if echo "$CHANGED_FILES" | grep -q "RULINGS.md$"; then
+    if grep -qE '(^|/)RULINGS\.md$' <<< "$CHANGED_FILES"; then
       echo "✓ RULINGS.md was updated (accepted as changelog equivalent)"
     else
       PASSED=false
