@@ -86,6 +86,26 @@ write_skip_result() {
 EOF
 }
 
+write_error_result() {
+  local reason="$1"
+  jq -n \
+    --arg provider "$LLM_PROVIDER" \
+    --arg model "$LLM_MODEL" \
+    --arg reason "$reason" \
+    --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{
+      review_id: "llm-review",
+      check_name: "LLM Review",
+      provider: $provider,
+      model: $model,
+      status: "error",
+      reason: $reason,
+      passed: false,
+      escalate: true,
+      timestamp: $timestamp
+    }' > "$RESULTS_DIR/llm-review.json"
+}
+
 # --- Read LLM configuration (nested under llm:) ---
 LLM_MODEL=$(yaml_get_nested "$CONFIG_FILE" "llm" "model" "claude-opus-4-6")
 LLM_MAX_TOKENS=$(yaml_get_nested "$CONFIG_FILE" "llm" "max_output_tokens" "8192")
@@ -129,15 +149,15 @@ fi
 echo "Config: provider=$LLM_PROVIDER model=$LLM_MODEL max_tokens=$LLM_MAX_TOKENS threshold=$CONFIDENCE_THRESHOLD"
 
 if [ "$LLM_PROVIDER" = "unsupported" ]; then
-  echo "::warning::Unsupported LLM provider '$REQUESTED_PROVIDER' — skipping LLM review"
-  write_skip_result "Unsupported LLM provider: ${REQUESTED_PROVIDER}"
-  exit 0
+  echo "::error::Unsupported LLM provider '$REQUESTED_PROVIDER' — fail closed"
+  write_error_result "Unsupported LLM provider: ${REQUESTED_PROVIDER}"
+  exit 1
 fi
 
 if [ "$LLM_PROVIDER" = "none" ]; then
-  echo "::warning::No LLM provider credentials configured — skipping LLM review"
-  write_skip_result "No LLM provider credentials configured"
-  exit 0
+  echo "::error::No LLM provider credentials configured — fail closed"
+  write_error_result "No LLM provider credentials configured"
+  exit 1
 fi
 
 if [ -z "$LLM_CHECKS" ]; then
@@ -262,9 +282,9 @@ USER_JSON=$(echo "$USER_MSG" | jq -Rsa .)
 RESPONSE_TEXT=""
 if [ "$LLM_PROVIDER" = "anthropic" ]; then
   if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-    echo "::warning::ANTHROPIC_API_KEY not set — skipping LLM review"
-    write_skip_result "ANTHROPIC_API_KEY not configured"
-    exit 0
+    echo "::error::ANTHROPIC_API_KEY not set — fail closed"
+    write_error_result "ANTHROPIC_API_KEY not configured"
+    exit 1
   fi
 
   API_RESPONSE=$(curl -s --max-time 120 \
@@ -280,38 +300,32 @@ if [ "$LLM_PROVIDER" = "anthropic" ]; then
     "https://api.anthropic.com/v1/messages" 2>&1) || true
 
   if [ -z "$API_RESPONSE" ]; then
-    echo "::warning::Claude API returned empty response — ESCALATE"
-    cat > "$RESULTS_DIR/llm-review.json" <<EOF
-{"review_id":"llm-review","provider":"$LLM_PROVIDER","model":"$LLM_MODEL","status":"error","reason":"Empty API response","passed":true,"escalate":true,"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
-EOF
-    exit 0
+    echo "::error::Claude API returned empty response — fail closed"
+    write_error_result "Empty API response"
+    exit 1
   fi
 
   API_ERROR=$(echo "$API_RESPONSE" | jq -r '.error.message // empty' 2>/dev/null || true)
   if [ -n "$API_ERROR" ]; then
-    echo "::warning::Claude API error: $API_ERROR — ESCALATE"
-    cat > "$RESULTS_DIR/llm-review.json" <<EOF
-{"review_id":"llm-review","provider":"$LLM_PROVIDER","model":"$LLM_MODEL","status":"error","reason":"API error: ${API_ERROR}","passed":true,"escalate":true,"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
-EOF
-    exit 0
+    echo "::error::Claude API error: $API_ERROR — fail closed"
+    write_error_result "API error: ${API_ERROR}"
+    exit 1
   fi
 
   RESPONSE_TEXT=$(echo "$API_RESPONSE" | jq -r '.content[0].text // empty' 2>/dev/null || true)
 elif [ "$LLM_PROVIDER" = "heiyucode_claude_code" ]; then
   if [ -z "$HEIYUCODE_TOKEN" ]; then
-    echo "::warning::HEIYUCODE_AUTH_TOKEN/HEIYUCODE_API_KEY not set — skipping LLM review"
-    write_skip_result "HeiyuCode token not configured"
-    exit 0
+    echo "::error::HEIYUCODE_AUTH_TOKEN/HEIYUCODE_API_KEY not set — fail closed"
+    write_error_result "HeiyuCode token not configured"
+    exit 1
   fi
 
   CLAUDE_BIN="$(command -v claude || true)"
   if [ -z "$CLAUDE_BIN" ]; then
     if ! command -v npm >/dev/null 2>&1; then
-      echo "::warning::npm unavailable and claude CLI not installed — ESCALATE"
-      cat > "$RESULTS_DIR/llm-review.json" <<EOF
-{"review_id":"llm-review","provider":"$LLM_PROVIDER","model":"$LLM_MODEL","status":"error","reason":"claude CLI unavailable","passed":true,"escalate":true,"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
-EOF
-      exit 0
+      echo "::error::npm unavailable and claude CLI not installed — fail closed"
+      write_error_result "claude CLI unavailable"
+      exit 1
     fi
     npm install --prefix /tmp/sentinel-claude-code-cli --no-save @anthropic-ai/claude-code@1.0.100 >/dev/null
     CLAUDE_BIN="/tmp/sentinel-claude-code-cli/node_modules/.bin/claude"
@@ -327,20 +341,16 @@ ${USER_MSG}"
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
     "$CLAUDE_BIN" -p "$CLAUDE_PROMPT" --output-format text --model "$LLM_MODEL" 2>"$CLAUDE_ERR"); then
     CLAUDE_ERROR=$(cat "$CLAUDE_ERR")
-    echo "::warning::HeiyuCode Claude Code client error: $CLAUDE_ERROR — ESCALATE"
-    cat > "$RESULTS_DIR/llm-review.json" <<EOF
-{"review_id":"llm-review","provider":"$LLM_PROVIDER","model":"$LLM_MODEL","status":"error","reason":"HeiyuCode Claude Code client error","passed":true,"escalate":true,"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
-EOF
-    exit 0
+    echo "::error::HeiyuCode Claude Code client error: $CLAUDE_ERROR — fail closed"
+    write_error_result "HeiyuCode Claude Code client error"
+    exit 1
   fi
 fi
 
 if [ -z "$RESPONSE_TEXT" ]; then
-  echo "::warning::No text in provider response — ESCALATE"
-  cat > "$RESULTS_DIR/llm-review.json" <<EOF
-{"review_id":"llm-review","provider":"$LLM_PROVIDER","model":"$LLM_MODEL","status":"error","reason":"No text in response","passed":true,"escalate":true,"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
-EOF
-  exit 0
+  echo "::error::No text in provider response — fail closed"
+  write_error_result "No text in response"
+  exit 1
 fi
 
 echo "Response received (${#RESPONSE_TEXT} chars)"
@@ -364,12 +374,13 @@ if echo "$REVIEW_JSON" | jq . >/dev/null 2>&1; then
   echo "Summary: $SUMMARY"
   echo "$REVIEW_JSON" | jq -r '.checks // {} | to_entries[] | "  \(.key): \(.value.verdict) (confidence: \(.value.confidence // "N/A"))"' 2>/dev/null || true
 
-  if [ "$VERDICT" = "FAIL" ]; then
+  if [ "$VERDICT" = "FAIL" ] || [ "$VERDICT" = "ESCALATE" ]; then
     PASSED=false
   fi
 else
-  echo "::warning::Could not parse LLM JSON — ESCALATE"
-  REVIEW_JSON="{}"
+  echo "::error::Could not parse LLM JSON — fail closed"
+  write_error_result "Could not parse LLM JSON"
+  exit 1
 fi
 
 # --- Write result ---

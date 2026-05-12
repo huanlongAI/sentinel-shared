@@ -51,7 +51,7 @@ jobs:
     env:
       HAS_PAT_DOWNSTREAM_READ: ${{ secrets.PAT_DOWNSTREAM_READ != '' }}
     steps:
-      - name: Skip D-8 when PAT_DOWNSTREAM_READ is not configured
+      - name: Fail D-8 when PAT_DOWNSTREAM_READ is not configured
         if: env.HAS_PAT_DOWNSTREAM_READ != 'true'
         run: |
           set -euo pipefail
@@ -60,13 +60,14 @@ jobs:
           {
             "check_id": "D-8",
             "check_name": "Cross-Repo SSOT",
-            "passed": true,
-            "status": "skipped_missing_pat",
-            "warnings": ["PAT_DOWNSTREAM_READ is not configured; cross-repo checkout skipped"],
+            "passed": false,
+            "status": "missing_pat",
+            "warnings": ["PAT_DOWNSTREAM_READ is not configured; D-8 cross-repo checkout cannot run"],
             "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOF
-          echo "::warning::PAT_DOWNSTREAM_READ is not configured; D-8 cross-repo checkout skipped"
+          echo "::error::PAT_DOWNSTREAM_READ is not configured; D-8 cross-repo checkout cannot run"
+          exit 1
 
       - name: Checkout upstream repository
         if: env.HAS_PAT_DOWNSTREAM_READ == 'true'

@@ -6,7 +6,7 @@ Consistency Sentinel 共享基础设施 — Reusable Workflows + Scripts + Matri
 
 `scripts/llm-review.sh` 支持以下 provider：
 
-- `auto`：默认值。优先使用 HeiyuCode token；否则回退 Anthropic official；都不存在则跳过 LLM 层。
+- `auto`：默认值。优先使用 HeiyuCode token；否则回退 Anthropic official；都不存在则 fail closed。
 - `anthropic`：使用 Anthropic official Messages API。
 - `heiyucode` / `heiyucode_claude_code`：使用 HeiyuCode Claude Code client transport。
 

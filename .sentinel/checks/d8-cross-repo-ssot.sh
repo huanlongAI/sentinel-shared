@@ -75,13 +75,19 @@ write_result() {
   local status="$1"
   shift
   local warnings=("$@")
+  local warnings_json
+  if [ "${#warnings[@]}" -gt 0 ]; then
+    warnings_json="$(json_string_array "${warnings[@]}")"
+  else
+    warnings_json="$(json_string_array)"
+  fi
   cat > "$result_file" <<EOF
 {
   "check_id": "D-8",
   "check_name": "Cross-Repo SSOT",
   "passed": $passed,
   "status": "$status",
-  "warnings": $(json_string_array "${warnings[@]}"),
+  "warnings": $warnings_json,
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF

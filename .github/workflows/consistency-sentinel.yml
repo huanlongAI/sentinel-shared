@@ -114,7 +114,12 @@ jobs:
       - name: "聚合判定 & 生成报告"
         id: aggregate
         if: always()
-        run: .sentinel-shared/scripts/aggregate.sh
+        run: |
+          REQUIRED_RESULTS="d1-changelog.json d2-terminology.json d3-cascade.json d4-directory.json d5-capability-source.json d6-brand-token.json"
+          if [ "${{ inputs.skip_llm }}" != "true" ]; then
+            REQUIRED_RESULTS="$REQUIRED_RESULTS llm-review.json"
+          fi
+          REQUIRED_RESULT_FILES="$REQUIRED_RESULTS" .sentinel-shared/scripts/aggregate.sh
 
       # ---- PR Comment ----
       - name: "发布报告到 PR"
