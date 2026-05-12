@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKFLOW="$ROOT_DIR/.github/workflows/self-test.yml"
+CALLER_SYNC="$ROOT_DIR/.github/workflows/caller-sync.yml"
+README="$ROOT_DIR/README.md"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -26,5 +28,8 @@ assert_file_contains "$WORKFLOW" "bash tests/test-policy-file.sh"
 assert_file_contains "$WORKFLOW" "bash tests/test-d7-d8.sh"
 assert_file_contains "$WORKFLOW" "bash -n scripts/*.sh tests/*.sh .sentinel/checks/*.sh"
 assert_file_contains "$WORKFLOW" "YAML.load_file"
+assert_file_contains "$CALLER_SYNC" "type: string"
+assert_file_contains "$CALLER_SYNC" "github.event.inputs.skip_llm || 'false'"
+assert_file_contains "$README" "都不存在则 fail closed"
 
 echo "ci workflow tests passed"
