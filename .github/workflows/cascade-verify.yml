@@ -100,7 +100,8 @@ jobs:
           echo "failed=${FAILED}" >> "$GITHUB_OUTPUT"
 
           if [ -n "$FAILED" ]; then
-            echo "::warning::Some dispatches failed: ${FAILED}"
+            echo "::error::Cascade dispatch failed for: ${FAILED}"
+            exit 1
           fi
 
   collect-results:
@@ -173,8 +174,8 @@ jobs:
           echo "" >> /tmp/cascade-summary.md
           cat /tmp/cascade-report.md >> /tmp/cascade-summary.md
 
-      - name: Create issue if failures detected
-        if: steps.results.outputs.fail != '0'
+      - name: Create issue if failures or incomplete results detected
+        if: steps.results.outputs.fail != '0' || steps.results.outputs.skip != '0'
         env:
           GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
         run: |
@@ -184,7 +185,7 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/huanlongAI/sentinel-shared/issues" \
             -d "$(jq -n \
-              --arg title "🚨 Cascade Verification: ${{ steps.results.outputs.fail }} repo(s) failed" \
+              --arg title "🚨 Cascade Verification: ${{ steps.results.outputs.fail }} failed, ${{ steps.results.outputs.skip }} skip/pending" \
               --arg body "$BODY" \
               '{title: $title, body: $body, labels: ["cascade-failure"]}')"
 
@@ -192,3 +193,9 @@ jobs:
         run: |
           echo "## Cascade Verification Results" >> $GITHUB_STEP_SUMMARY
           cat /tmp/cascade-summary.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Fail on downstream verification gaps
+        if: steps.results.outputs.fail != '0' || steps.results.outputs.skip != '0'
+        run: |
+          echo "::error::Cascade downstream verification failed or incomplete: ${{ steps.results.outputs.fail }} failed, ${{ steps.results.outputs.skip }} skip/pending"
+          exit 1

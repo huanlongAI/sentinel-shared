@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKFLOW="$ROOT_DIR/.github/workflows/self-test.yml"
 CALLER_SYNC="$ROOT_DIR/.github/workflows/caller-sync.yml"
+CASCADE_VERIFY="$ROOT_DIR/.github/workflows/cascade-verify.yml"
 README="$ROOT_DIR/README.md"
 
 fail() {
@@ -30,6 +31,9 @@ assert_file_contains "$WORKFLOW" "bash -n scripts/*.sh tests/*.sh .sentinel/chec
 assert_file_contains "$WORKFLOW" "YAML.load_file"
 assert_file_contains "$CALLER_SYNC" "type: string"
 assert_file_contains "$CALLER_SYNC" "github.event.inputs.skip_llm || 'false'"
+assert_file_contains "$CASCADE_VERIFY" "::error::Cascade dispatch failed"
+assert_file_contains "$CASCADE_VERIFY" "::error::Cascade downstream verification failed or incomplete"
+assert_file_contains "$CASCADE_VERIFY" "steps.results.outputs.skip != '0'"
 assert_file_contains "$README" "都不存在则 fail closed"
 
 echo "ci workflow tests passed"
