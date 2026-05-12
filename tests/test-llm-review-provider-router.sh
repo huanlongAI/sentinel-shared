@@ -8,6 +8,14 @@ fail() {
   exit 1
 }
 
+assert_contains() {
+  local haystack="$1"
+  local needle="$2"
+  if [[ "$haystack" != *"$needle"* ]]; then
+    fail "Expected output to contain: $needle"
+  fi
+}
+
 make_repo() {
   local dir="$1"
   mkdir -p "$dir/.sentinel/results" "$dir/.sentinel/prompts"
@@ -224,11 +232,20 @@ JSON
     "$tmp/results/aggregate.json" >/dev/null || fail "Aggregator must materialize missing required result failure"
 }
 
+test_workflow_requires_llm_result_when_llm_enabled() {
+  local workflow
+  workflow="$(cat "$ROOT_DIR/.github/workflows/consistency-sentinel.yml")"
+  assert_contains "$workflow" "REQUIRED_RESULT_FILES="
+  assert_contains "$workflow" "llm-review.json"
+  assert_contains "$workflow" "inputs.skip_llm"
+}
+
 test_anthropic_provider_uses_messages_api
 test_heiyucode_provider_uses_claude_code_client
 test_anthropic_api_error_fails_closed
 test_anthropic_empty_text_fails_closed
 test_aggregate_includes_llm_review_failure
 test_aggregate_fails_closed_when_required_result_is_missing
+test_workflow_requires_llm_result_when_llm_enabled
 
 echo "llm-review provider router tests passed"
