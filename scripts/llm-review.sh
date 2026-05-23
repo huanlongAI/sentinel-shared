@@ -107,18 +107,31 @@ safe_stderr_tail() {
   ' 2>/dev/null || printf '<stderr redaction failed>'
 }
 
+safe_response_tail() {
+  local file="$1"
+  if [ ! -s "$file" ]; then
+    return 0
+  fi
+
+  tail -c 4000 "$file" | HEIYUCODE_TOKEN="${HEIYUCODE_TOKEN:-}" perl -0pe '
+    BEGIN { $secret = $ENV{"HEIYUCODE_TOKEN"} // "" }
+    if ($secret ne "") { s/\Q$secret\E/[redacted]/g }
+  ' 2>/dev/null || printf '<response redaction failed>'
+}
+
 write_provider_error_result() {
   local reason="$1"
   local exit_code="$2"
   local duration_seconds="$3"
   local stdout_file="$4"
   local stderr_file="$5"
-  local stdout_bytes stderr_bytes stderr_tail base_url_configured api_url_configured timestamp
+  local stdout_bytes stderr_bytes stderr_tail response_tail base_url_configured api_url_configured timestamp
   local provider_transport provider_http_status provider_auth_header_kind
 
   stdout_bytes="$(file_size_bytes "$stdout_file")"
   stderr_bytes="$(file_size_bytes "$stderr_file")"
   stderr_tail="$(safe_stderr_tail "$stderr_file")"
+  response_tail="$(safe_response_tail "$stdout_file")"
   base_url_configured=false
   if [ -n "${HEIYUCODE_BASE_URL:-}" ]; then
     base_url_configured=true
@@ -142,6 +155,7 @@ write_provider_error_result() {
     --arg http_status "$provider_http_status" \
     --arg auth_header_kind "$provider_auth_header_kind" \
     --arg stderr_tail "$stderr_tail" \
+    --arg response_tail "$response_tail" \
     --arg timestamp "$timestamp" \
     --argjson exit_code "$exit_code" \
     --argjson duration_seconds "$duration_seconds" \
@@ -166,6 +180,7 @@ write_provider_error_result() {
       stdout_bytes: $stdout_bytes,
       stderr_bytes: $stderr_bytes,
       stderr_tail: $stderr_tail,
+      response_tail: $response_tail,
       base_url_configured: $base_url_configured,
       api_url_configured: $api_url_configured,
       timestamp: $timestamp

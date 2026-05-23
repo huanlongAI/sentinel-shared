@@ -120,6 +120,9 @@ case "${FAKE_CURL_MODE}" in
   empty)
     write_response 200 ''
     ;;
+  http_500)
+    write_response 500 '{"error":{"message":"upstream unavailable"}}'
+    ;;
   auth_fallback)
     if [ "$count" -eq 1 ]; then
       write_response 401 '{"code":"INVALID_API_KEY","message":"bad auth header"}'
@@ -326,7 +329,46 @@ test_heiyucode_provider_empty_output_escalates_with_diagnostics() {
     and .stdout_bytes == 0
     and .stderr_bytes == 0
     and .stderr_tail == ""
+    and .response_tail == ""
   ' "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "Empty output diagnostics mismatch"
+}
+
+test_heiyucode_provider_http_error_escalates_with_response_tail() {
+  local tmp fake_bin calls status
+  tmp="$(mktemp -d)"
+  fake_bin="$tmp/bin"
+  calls="$tmp/calls"
+  mkdir -p "$fake_bin" "$calls"
+  make_repo "$tmp/repo"
+  write_fake_heiyucode_curl "$fake_bin/curl"
+
+  set +e
+  (
+    cd "$tmp/repo"
+    PATH="$fake_bin:$PATH" \
+      FAKE_CALL_DIR="$calls" \
+      FAKE_CURL_MODE="http_500" \
+      SENTINEL_LLM_PROVIDER="heiyucode" \
+      HEIYUCODE_AUTH_TOKEN="heiyucode-test-token" \
+      HEIYUCODE_BASE_URL="https://www.heiyucode.com" \
+      HEIYUCODE_MODEL="claude-heiyu-test" \
+      "$ROOT_DIR/scripts/llm-review.sh"
+  )
+  status="$?"
+  set -e
+
+  [ "$status" -eq 0 ] || fail "HTTP provider error should be non-blocking ESCALATE"
+  jq -e '
+    .provider == "heiyucode_claude_code"
+    and .transport == "messages-api"
+    and .status == "error"
+    and .error_type == "provider_error"
+    and .reason == "HeiyuCode Messages API HTTP 500"
+    and .passed == true
+    and .escalate == true
+    and .http_status == "500"
+    and (.response_tail | contains("upstream unavailable"))
+  ' "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "HTTP error diagnostics mismatch"
 }
 
 test_heiyucode_provider_retries_x_api_key_after_bearer_auth_failure() {
@@ -367,6 +409,7 @@ test_heiyucode_provider_hard_fails_explicit_fail_verdict
 test_heiyucode_provider_timeout_escalates_without_waiting_for_job_timeout
 test_heiyucode_provider_nonzero_exit_escalates_with_diagnostics
 test_heiyucode_provider_empty_output_escalates_with_diagnostics
+test_heiyucode_provider_http_error_escalates_with_response_tail
 test_heiyucode_provider_retries_x_api_key_after_bearer_auth_failure
 
 echo "llm-review provider router tests passed"
