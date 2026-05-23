@@ -123,6 +123,13 @@ case "${FAKE_CURL_MODE}" in
   http_500)
     write_response 500 '{"error":{"message":"upstream unavailable"}}'
     ;;
+  http_524_then_pass)
+    if [ "$count" -eq 1 ]; then
+      write_response 524 'error code: 524'
+    else
+      write_response 200 '{"content":[{"type":"text","text":"{\"verdict\":\"PASS\",\"checks\":{\"GPC-003\":{\"verdict\":\"PASS\",\"confidence\":0.96,\"reason\":\"ok\"}},\"summary\":\"ok\"}"}]}'
+    fi
+    ;;
   auth_fallback)
     if [ "$count" -eq 1 ]; then
       write_response 401 '{"code":"INVALID_API_KEY","message":"bad auth header"}'
@@ -171,6 +178,7 @@ test_heiyucode_provider_uses_messages_api() {
     and .duration_seconds >= 0
     and .stdout_bytes > 0
     and .stderr_bytes == 0
+    and .attempts == 1
     and .base_url_configured == true
     and .api_url_configured == true
     and .passed == true
@@ -373,8 +381,40 @@ test_heiyucode_provider_http_error_escalates_with_response_tail() {
     and .passed == true
     and .escalate == true
     and .http_status == "500"
+    and .attempts == 2
     and (.response_tail | contains("upstream unavailable"))
   ' "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "HTTP error diagnostics mismatch"
+}
+
+test_heiyucode_provider_retries_retryable_524_once() {
+  local tmp fake_bin calls
+  tmp="$(mktemp -d)"
+  fake_bin="$tmp/bin"
+  calls="$tmp/calls"
+  mkdir -p "$fake_bin" "$calls"
+  make_repo "$tmp/repo"
+  write_fake_heiyucode_curl "$fake_bin/curl"
+
+  (
+    cd "$tmp/repo"
+    PATH="$fake_bin:$PATH" \
+      FAKE_CALL_DIR="$calls" \
+      FAKE_CURL_MODE="http_524_then_pass" \
+      SENTINEL_LLM_PROVIDER="heiyucode" \
+      HEIYUCODE_AUTH_TOKEN="heiyucode-test-token" \
+      HEIYUCODE_BASE_URL="https://www.heiyucode.com" \
+      HEIYUCODE_MODEL="claude-heiyu-test" \
+      "$ROOT_DIR/scripts/llm-review.sh"
+  )
+
+  [ "$(cat "$calls/curl.count")" = "2" ] || fail "Retryable 524 should be retried exactly once"
+  jq -e '
+    .provider == "heiyucode_claude_code"
+    and .transport == "messages-api"
+    and .http_status == "200"
+    and .attempts == 2
+    and .passed == true
+  ' "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "Retryable 524 retry result mismatch"
 }
 
 test_heiyucode_provider_retries_x_api_key_after_bearer_auth_failure() {
@@ -409,6 +449,7 @@ test_heiyucode_provider_retries_x_api_key_after_bearer_auth_failure() {
     and .duration_seconds >= 0
     and .stdout_bytes > 0
     and .stderr_bytes == 0
+    and .attempts == 2
     and .base_url_configured == true
     and .api_url_configured == true
     and .passed == true
@@ -422,6 +463,7 @@ test_heiyucode_provider_timeout_escalates_without_waiting_for_job_timeout
 test_heiyucode_provider_nonzero_exit_escalates_with_diagnostics
 test_heiyucode_provider_empty_output_escalates_with_diagnostics
 test_heiyucode_provider_http_error_escalates_with_response_tail
+test_heiyucode_provider_retries_retryable_524_once
 test_heiyucode_provider_retries_x_api_key_after_bearer_auth_failure
 
 echo "llm-review provider router tests passed"

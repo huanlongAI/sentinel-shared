@@ -126,7 +126,7 @@ write_provider_error_result() {
   local stdout_file="$4"
   local stderr_file="$5"
   local stdout_bytes stderr_bytes stderr_tail response_tail base_url_configured api_url_configured timestamp
-  local provider_transport provider_http_status provider_auth_header_kind
+  local provider_transport provider_http_status provider_auth_header_kind provider_attempts
 
   stdout_bytes="$(file_size_bytes "$stdout_file")"
   stderr_bytes="$(file_size_bytes "$stderr_file")"
@@ -143,6 +143,7 @@ write_provider_error_result() {
   provider_transport="${PROVIDER_TRANSPORT:-n/a}"
   provider_http_status="${PROVIDER_HTTP_STATUS:-n/a}"
   provider_auth_header_kind="${PROVIDER_AUTH_HEADER_KIND:-n/a}"
+  provider_attempts="${PROVIDER_ATTEMPTS:-0}"
   timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
   jq -n \
@@ -158,6 +159,7 @@ write_provider_error_result() {
     --arg response_tail "$response_tail" \
     --arg timestamp "$timestamp" \
     --argjson exit_code "$exit_code" \
+    --argjson attempts "$provider_attempts" \
     --argjson duration_seconds "$duration_seconds" \
     --argjson stdout_bytes "$stdout_bytes" \
     --argjson stderr_bytes "$stderr_bytes" \
@@ -176,6 +178,7 @@ write_provider_error_result() {
       http_status: $http_status,
       auth_header_kind: $auth_header_kind,
       exit_code: $exit_code,
+      attempts: $attempts,
       duration_seconds: $duration_seconds,
       stdout_bytes: $stdout_bytes,
       stderr_bytes: $stderr_bytes,
@@ -186,7 +189,7 @@ write_provider_error_result() {
       timestamp: $timestamp
     }' > "$RESULTS_DIR/llm-review.json"
 
-  echo "::warning::${reason} — ESCALATE (provider=${LLM_PROVIDER} model=${LLM_MODEL} transport=${provider_transport} http_status=${provider_http_status} auth_header_kind=${provider_auth_header_kind} exit_code=${exit_code} duration_seconds=${duration_seconds} stdout_bytes=${stdout_bytes} stderr_bytes=${stderr_bytes} base_url_configured=${base_url_configured} api_url_configured=${api_url_configured})"
+  echo "::warning::${reason} — ESCALATE (provider=${LLM_PROVIDER} model=${LLM_MODEL} transport=${provider_transport} http_status=${provider_http_status} auth_header_kind=${provider_auth_header_kind} exit_code=${exit_code} attempts=${provider_attempts} duration_seconds=${duration_seconds} stdout_bytes=${stdout_bytes} stderr_bytes=${stderr_bytes} base_url_configured=${base_url_configured} api_url_configured=${api_url_configured})"
 }
 
 run_with_timeout() {
@@ -411,6 +414,7 @@ PROVIDER_EXIT_CODE="${PROVIDER_EXIT_CODE:-0}"
 PROVIDER_DURATION_SECONDS="${PROVIDER_DURATION_SECONDS:-0}"
 PROVIDER_STDOUT_BYTES="${PROVIDER_STDOUT_BYTES:-0}"
 PROVIDER_STDERR_BYTES="${PROVIDER_STDERR_BYTES:-0}"
+PROVIDER_ATTEMPTS="${PROVIDER_ATTEMPTS:-0}"
 PROVIDER_BASE_URL_CONFIGURED="${PROVIDER_BASE_URL_CONFIGURED:-false}"
 PROVIDER_API_URL_CONFIGURED="${PROVIDER_API_URL_CONFIGURED:-false}"
 
@@ -506,6 +510,17 @@ elif [ "$LLM_PROVIDER" = "heiyucode_claude_code" ]; then
     awk -F= '/^http_status=/{print $2; exit}' "$meta_file" 2>/dev/null || true
   }
 
+  is_retryable_http_status() {
+    case "$1" in
+      500|502|503|504|520|522|524)
+        return 0
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  }
+
   client_started="$(date +%s)"
   heiyucode_base_url_configured=false
   if [ -n "$HEIYUCODE_BASE_URL" ]; then
@@ -522,24 +537,12 @@ elif [ "$LLM_PROVIDER" = "heiyucode_claude_code" ]; then
   HTTP_STATUS="n/a"
   PROVIDER_AUTH_HEADER_KIND="$AUTH_HEADER_KIND"
   PROVIDER_HTTP_STATUS="$HTTP_STATUS"
-  set +e
-  call_heiyucode_messages "$AUTH_HEADER_KIND" "$API_RESPONSE" "$API_ERR" "$API_META"
-  client_status="$?"
-  set -e
-  client_duration="$(( $(date +%s) - client_started ))"
-  HTTP_STATUS="$(extract_http_status "$API_META")"
-  PROVIDER_HTTP_STATUS="$HTTP_STATUS"
-  PROVIDER_EXIT_CODE="$client_status"
-  PROVIDER_DURATION_SECONDS="$client_duration"
-  PROVIDER_STDOUT_BYTES="$(file_size_bytes "$API_RESPONSE")"
-  PROVIDER_STDERR_BYTES="$(file_size_bytes "$API_ERR")"
 
-  if [ "$client_status" -eq 0 ] && { [ "$HTTP_STATUS" = "401" ] || [ "$HTTP_STATUS" = "403" ]; }; then
-    AUTH_HEADER_KIND="x-api-key"
-    PROVIDER_AUTH_HEADER_KIND="$AUTH_HEADER_KIND"
-    client_started="$(date +%s)"
+  run_heiyucode_attempt() {
+    local auth_header_kind="$1"
+    PROVIDER_ATTEMPTS="$(( ${PROVIDER_ATTEMPTS:-0} + 1 ))"
     set +e
-    call_heiyucode_messages "$AUTH_HEADER_KIND" "$API_RESPONSE" "$API_ERR" "$API_META"
+    call_heiyucode_messages "$auth_header_kind" "$API_RESPONSE" "$API_ERR" "$API_META"
     client_status="$?"
     set -e
     client_duration="$(( $(date +%s) - client_started ))"
@@ -549,7 +552,22 @@ elif [ "$LLM_PROVIDER" = "heiyucode_claude_code" ]; then
     PROVIDER_DURATION_SECONDS="$client_duration"
     PROVIDER_STDOUT_BYTES="$(file_size_bytes "$API_RESPONSE")"
     PROVIDER_STDERR_BYTES="$(file_size_bytes "$API_ERR")"
+  }
+
+  run_heiyucode_attempt "$AUTH_HEADER_KIND"
+
+  if [ "$client_status" -eq 0 ] && { [ "$HTTP_STATUS" = "401" ] || [ "$HTTP_STATUS" = "403" ]; }; then
+    AUTH_HEADER_KIND="x-api-key"
+    PROVIDER_AUTH_HEADER_KIND="$AUTH_HEADER_KIND"
+    run_heiyucode_attempt "$AUTH_HEADER_KIND"
   fi
+
+  retryable_retries=0
+  while [ "$client_status" -eq 0 ] && is_retryable_http_status "$HTTP_STATUS" && [ "$retryable_retries" -lt 1 ]; do
+    retryable_retries="$(( retryable_retries + 1 ))"
+    echo "HeiyuCode Messages API HTTP ${HTTP_STATUS}; retrying once with auth_header_kind=${AUTH_HEADER_KIND}"
+    run_heiyucode_attempt "$AUTH_HEADER_KIND"
+  done
 
   if [ "$client_status" -eq 124 ]; then
     write_provider_error_result "HeiyuCode Messages API timeout after ${HEIYUCODE_CLIENT_TIMEOUT_SECONDS}s" 124 "$client_duration" "$API_RESPONSE" "$API_ERR"
@@ -593,7 +611,7 @@ EOF
 fi
 
 echo "Response received (${#RESPONSE_TEXT} chars)"
-echo "Provider diagnostics: provider=${LLM_PROVIDER} model=${LLM_MODEL} transport=${PROVIDER_TRANSPORT:-n/a} http_status=${PROVIDER_HTTP_STATUS:-n/a} auth_header_kind=${PROVIDER_AUTH_HEADER_KIND:-n/a} exit_code=${PROVIDER_EXIT_CODE:-0} duration_seconds=${PROVIDER_DURATION_SECONDS:-0} stdout_bytes=${PROVIDER_STDOUT_BYTES:-0} stderr_bytes=${PROVIDER_STDERR_BYTES:-0} base_url_configured=${PROVIDER_BASE_URL_CONFIGURED:-false} api_url_configured=${PROVIDER_API_URL_CONFIGURED:-false}"
+echo "Provider diagnostics: provider=${LLM_PROVIDER} model=${LLM_MODEL} transport=${PROVIDER_TRANSPORT:-n/a} http_status=${PROVIDER_HTTP_STATUS:-n/a} auth_header_kind=${PROVIDER_AUTH_HEADER_KIND:-n/a} exit_code=${PROVIDER_EXIT_CODE:-0} attempts=${PROVIDER_ATTEMPTS:-0} duration_seconds=${PROVIDER_DURATION_SECONDS:-0} stdout_bytes=${PROVIDER_STDOUT_BYTES:-0} stderr_bytes=${PROVIDER_STDERR_BYTES:-0} base_url_configured=${PROVIDER_BASE_URL_CONFIGURED:-false} api_url_configured=${PROVIDER_API_URL_CONFIGURED:-false}"
 
 # Extract JSON from response
 REVIEW_JSON=$(echo "$RESPONSE_TEXT" | sed -n '/^{/,/^}/p' || true)
@@ -633,6 +651,7 @@ cat > "$RESULT_FILE" <<EOF
   "http_status": "${PROVIDER_HTTP_STATUS:-n/a}",
   "auth_header_kind": "${PROVIDER_AUTH_HEADER_KIND:-n/a}",
   "exit_code": ${PROVIDER_EXIT_CODE:-0},
+  "attempts": ${PROVIDER_ATTEMPTS:-0},
   "duration_seconds": ${PROVIDER_DURATION_SECONDS:-0},
   "stdout_bytes": ${PROVIDER_STDOUT_BYTES:-0},
   "stderr_bytes": ${PROVIDER_STDERR_BYTES:-0},
