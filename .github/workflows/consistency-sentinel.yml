@@ -19,7 +19,7 @@ on:
         default: 'auto'
         type: string
       heiyucode_base_url:
-        description: 'HeiyuCode Claude Code client base URL'
+        description: 'HeiyuCode Messages API base URL'
         required: false
         default: 'https://www.heiyucode.com'
         type: string
