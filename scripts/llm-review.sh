@@ -404,6 +404,16 @@ SYSTEM_JSON=$(echo "$SYSTEM_PROMPT_CONTENT" | jq -Rsa .)
 USER_JSON=$(echo "$USER_MSG" | jq -Rsa .)
 
 RESPONSE_TEXT=""
+PROVIDER_TRANSPORT="${PROVIDER_TRANSPORT:-n/a}"
+PROVIDER_HTTP_STATUS="${PROVIDER_HTTP_STATUS:-n/a}"
+PROVIDER_AUTH_HEADER_KIND="${PROVIDER_AUTH_HEADER_KIND:-n/a}"
+PROVIDER_EXIT_CODE="${PROVIDER_EXIT_CODE:-0}"
+PROVIDER_DURATION_SECONDS="${PROVIDER_DURATION_SECONDS:-0}"
+PROVIDER_STDOUT_BYTES="${PROVIDER_STDOUT_BYTES:-0}"
+PROVIDER_STDERR_BYTES="${PROVIDER_STDERR_BYTES:-0}"
+PROVIDER_BASE_URL_CONFIGURED="${PROVIDER_BASE_URL_CONFIGURED:-false}"
+PROVIDER_API_URL_CONFIGURED="${PROVIDER_API_URL_CONFIGURED:-false}"
+
 if [ "$LLM_PROVIDER" = "anthropic" ]; then
   if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
     echo "::warning::ANTHROPIC_API_KEY not set — skipping LLM review"
@@ -501,6 +511,11 @@ elif [ "$LLM_PROVIDER" = "heiyucode_claude_code" ]; then
   if [ -n "$HEIYUCODE_BASE_URL" ]; then
     heiyucode_base_url_configured=true
   fi
+  PROVIDER_BASE_URL_CONFIGURED="$heiyucode_base_url_configured"
+  PROVIDER_API_URL_CONFIGURED=false
+  if [ -n "$HEIYUCODE_API_URL" ]; then
+    PROVIDER_API_URL_CONFIGURED=true
+  fi
   echo "HeiyuCode Messages API timeout_seconds=${HEIYUCODE_CLIENT_TIMEOUT_SECONDS} base_url_configured=${heiyucode_base_url_configured}"
 
   AUTH_HEADER_KIND="authorization_bearer"
@@ -514,6 +529,10 @@ elif [ "$LLM_PROVIDER" = "heiyucode_claude_code" ]; then
   client_duration="$(( $(date +%s) - client_started ))"
   HTTP_STATUS="$(extract_http_status "$API_META")"
   PROVIDER_HTTP_STATUS="$HTTP_STATUS"
+  PROVIDER_EXIT_CODE="$client_status"
+  PROVIDER_DURATION_SECONDS="$client_duration"
+  PROVIDER_STDOUT_BYTES="$(file_size_bytes "$API_RESPONSE")"
+  PROVIDER_STDERR_BYTES="$(file_size_bytes "$API_ERR")"
 
   if [ "$client_status" -eq 0 ] && { [ "$HTTP_STATUS" = "401" ] || [ "$HTTP_STATUS" = "403" ]; }; then
     AUTH_HEADER_KIND="x-api-key"
@@ -526,6 +545,10 @@ elif [ "$LLM_PROVIDER" = "heiyucode_claude_code" ]; then
     client_duration="$(( $(date +%s) - client_started ))"
     HTTP_STATUS="$(extract_http_status "$API_META")"
     PROVIDER_HTTP_STATUS="$HTTP_STATUS"
+    PROVIDER_EXIT_CODE="$client_status"
+    PROVIDER_DURATION_SECONDS="$client_duration"
+    PROVIDER_STDOUT_BYTES="$(file_size_bytes "$API_RESPONSE")"
+    PROVIDER_STDERR_BYTES="$(file_size_bytes "$API_ERR")"
   fi
 
   if [ "$client_status" -eq 124 ]; then
@@ -570,6 +593,7 @@ EOF
 fi
 
 echo "Response received (${#RESPONSE_TEXT} chars)"
+echo "Provider diagnostics: provider=${LLM_PROVIDER} model=${LLM_MODEL} transport=${PROVIDER_TRANSPORT:-n/a} http_status=${PROVIDER_HTTP_STATUS:-n/a} auth_header_kind=${PROVIDER_AUTH_HEADER_KIND:-n/a} exit_code=${PROVIDER_EXIT_CODE:-0} duration_seconds=${PROVIDER_DURATION_SECONDS:-0} stdout_bytes=${PROVIDER_STDOUT_BYTES:-0} stderr_bytes=${PROVIDER_STDERR_BYTES:-0} base_url_configured=${PROVIDER_BASE_URL_CONFIGURED:-false} api_url_configured=${PROVIDER_API_URL_CONFIGURED:-false}"
 
 # Extract JSON from response
 REVIEW_JSON=$(echo "$RESPONSE_TEXT" | sed -n '/^{/,/^}/p' || true)
@@ -608,6 +632,12 @@ cat > "$RESULT_FILE" <<EOF
   "transport": "${PROVIDER_TRANSPORT:-n/a}",
   "http_status": "${PROVIDER_HTTP_STATUS:-n/a}",
   "auth_header_kind": "${PROVIDER_AUTH_HEADER_KIND:-n/a}",
+  "exit_code": ${PROVIDER_EXIT_CODE:-0},
+  "duration_seconds": ${PROVIDER_DURATION_SECONDS:-0},
+  "stdout_bytes": ${PROVIDER_STDOUT_BYTES:-0},
+  "stderr_bytes": ${PROVIDER_STDERR_BYTES:-0},
+  "base_url_configured": ${PROVIDER_BASE_URL_CONFIGURED:-false},
+  "api_url_configured": ${PROVIDER_API_URL_CONFIGURED:-false},
   "status": "completed",
   "verdict": "$VERDICT",
   "passed": $([[ "$PASSED" == true ]] && echo "true" || echo "false"),

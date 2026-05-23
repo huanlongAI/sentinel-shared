@@ -167,6 +167,12 @@ test_heiyucode_provider_uses_messages_api() {
     and .transport == "messages-api"
     and .http_status == "200"
     and .auth_header_kind == "authorization_bearer"
+    and .exit_code == 0
+    and .duration_seconds >= 0
+    and .stdout_bytes > 0
+    and .stderr_bytes == 0
+    and .base_url_configured == true
+    and .api_url_configured == true
     and .passed == true
     and .model == "claude-heiyu-test"
   ' \
@@ -399,6 +405,12 @@ test_heiyucode_provider_retries_x_api_key_after_bearer_auth_failure() {
     and .transport == "messages-api"
     and .http_status == "200"
     and .auth_header_kind == "x-api-key"
+    and .exit_code == 0
+    and .duration_seconds >= 0
+    and .stdout_bytes > 0
+    and .stderr_bytes == 0
+    and .base_url_configured == true
+    and .api_url_configured == true
     and .passed == true
   ' "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "x-api-key fallback result mismatch"
 }
