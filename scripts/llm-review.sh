@@ -107,55 +107,89 @@ safe_stderr_tail() {
   ' 2>/dev/null || printf '<stderr redaction failed>'
 }
 
+safe_response_tail() {
+  local file="$1"
+  if [ ! -s "$file" ]; then
+    return 0
+  fi
+
+  tail -c 4000 "$file" | HEIYUCODE_TOKEN="${HEIYUCODE_TOKEN:-}" perl -0pe '
+    BEGIN { $secret = $ENV{"HEIYUCODE_TOKEN"} // "" }
+    if ($secret ne "") { s/\Q$secret\E/[redacted]/g }
+  ' 2>/dev/null || printf '<response redaction failed>'
+}
+
 write_provider_error_result() {
   local reason="$1"
   local exit_code="$2"
   local duration_seconds="$3"
   local stdout_file="$4"
   local stderr_file="$5"
-  local stdout_bytes stderr_bytes stderr_tail base_url_configured timestamp
+  local stdout_bytes stderr_bytes stderr_tail response_tail base_url_configured api_url_configured timestamp
+  local provider_transport provider_http_status provider_auth_header_kind provider_attempts
 
   stdout_bytes="$(file_size_bytes "$stdout_file")"
   stderr_bytes="$(file_size_bytes "$stderr_file")"
   stderr_tail="$(safe_stderr_tail "$stderr_file")"
+  response_tail="$(safe_response_tail "$stdout_file")"
   base_url_configured=false
   if [ -n "${HEIYUCODE_BASE_URL:-}" ]; then
     base_url_configured=true
   fi
+  api_url_configured=false
+  if [ -n "${HEIYUCODE_API_URL:-}" ]; then
+    api_url_configured=true
+  fi
+  provider_transport="${PROVIDER_TRANSPORT:-n/a}"
+  provider_http_status="${PROVIDER_HTTP_STATUS:-n/a}"
+  provider_auth_header_kind="${PROVIDER_AUTH_HEADER_KIND:-n/a}"
+  provider_attempts="${PROVIDER_ATTEMPTS:-0}"
   timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
   jq -n \
     --arg provider "$LLM_PROVIDER" \
     --arg model "$LLM_MODEL" \
+    --arg transport "$provider_transport" \
     --arg status "error" \
     --arg error_type "provider_error" \
     --arg reason "$reason" \
+    --arg http_status "$provider_http_status" \
+    --arg auth_header_kind "$provider_auth_header_kind" \
     --arg stderr_tail "$stderr_tail" \
+    --arg response_tail "$response_tail" \
     --arg timestamp "$timestamp" \
     --argjson exit_code "$exit_code" \
+    --argjson attempts "$provider_attempts" \
     --argjson duration_seconds "$duration_seconds" \
     --argjson stdout_bytes "$stdout_bytes" \
     --argjson stderr_bytes "$stderr_bytes" \
     --argjson base_url_configured "$base_url_configured" \
+    --argjson api_url_configured "$api_url_configured" \
     '{
       review_id: "llm-review",
       provider: $provider,
       model: $model,
+      transport: $transport,
       status: $status,
       error_type: $error_type,
       reason: $reason,
       passed: true,
       escalate: true,
+      http_status: $http_status,
+      auth_header_kind: $auth_header_kind,
       exit_code: $exit_code,
+      attempts: $attempts,
       duration_seconds: $duration_seconds,
       stdout_bytes: $stdout_bytes,
       stderr_bytes: $stderr_bytes,
       stderr_tail: $stderr_tail,
+      response_tail: $response_tail,
       base_url_configured: $base_url_configured,
+      api_url_configured: $api_url_configured,
       timestamp: $timestamp
     }' > "$RESULTS_DIR/llm-review.json"
 
-  echo "::warning::${reason} — ESCALATE (provider=${LLM_PROVIDER} model=${LLM_MODEL} exit_code=${exit_code} duration_seconds=${duration_seconds} stdout_bytes=${stdout_bytes} stderr_bytes=${stderr_bytes} base_url_configured=${base_url_configured})"
+  echo "::warning::${reason} — ESCALATE (provider=${LLM_PROVIDER} model=${LLM_MODEL} transport=${provider_transport} http_status=${provider_http_status} auth_header_kind=${provider_auth_header_kind} exit_code=${exit_code} attempts=${provider_attempts} duration_seconds=${duration_seconds} stdout_bytes=${stdout_bytes} stderr_bytes=${stderr_bytes} base_url_configured=${base_url_configured} api_url_configured=${api_url_configured})"
 }
 
 run_with_timeout() {
@@ -205,10 +239,10 @@ CONFIDENCE_THRESHOLD=$(yaml_get_nested "$CONFIG_FILE" "llm" "confidence_threshol
 CONFIG_PROVIDER=$(yaml_get_nested "$CONFIG_FILE" "llm" "provider" "auto")
 REQUESTED_PROVIDER="${SENTINEL_LLM_PROVIDER:-$CONFIG_PROVIDER}"
 HEIYUCODE_BASE_URL="${HEIYUCODE_BASE_URL:-$(yaml_get_nested "$CONFIG_FILE" "llm" "heiyucode_base_url" "https://www.heiyucode.com")}"
+HEIYUCODE_API_URL="${HEIYUCODE_API_URL:-${HEIYUCODE_BASE_URL%/}/v1/messages}"
 HEIYUCODE_MODEL="${HEIYUCODE_MODEL:-$(yaml_get_nested "$CONFIG_FILE" "llm" "heiyucode_model" "$LLM_MODEL")}"
 HEIYUCODE_TOKEN="${HEIYUCODE_AUTH_TOKEN:-${HEIYUCODE_API_KEY:-}}"
 HEIYUCODE_CLIENT_TIMEOUT_SECONDS="${HEIYUCODE_CLIENT_TIMEOUT_SECONDS:-420}"
-HEIYUCODE_INSTALL_TIMEOUT_SECONDS="${HEIYUCODE_INSTALL_TIMEOUT_SECONDS:-120}"
 
 resolve_provider() {
   local requested="$1"
@@ -373,6 +407,17 @@ SYSTEM_JSON=$(echo "$SYSTEM_PROMPT_CONTENT" | jq -Rsa .)
 USER_JSON=$(echo "$USER_MSG" | jq -Rsa .)
 
 RESPONSE_TEXT=""
+PROVIDER_TRANSPORT="${PROVIDER_TRANSPORT:-n/a}"
+PROVIDER_HTTP_STATUS="${PROVIDER_HTTP_STATUS:-n/a}"
+PROVIDER_AUTH_HEADER_KIND="${PROVIDER_AUTH_HEADER_KIND:-n/a}"
+PROVIDER_EXIT_CODE="${PROVIDER_EXIT_CODE:-0}"
+PROVIDER_DURATION_SECONDS="${PROVIDER_DURATION_SECONDS:-0}"
+PROVIDER_STDOUT_BYTES="${PROVIDER_STDOUT_BYTES:-0}"
+PROVIDER_STDERR_BYTES="${PROVIDER_STDERR_BYTES:-0}"
+PROVIDER_ATTEMPTS="${PROVIDER_ATTEMPTS:-0}"
+PROVIDER_BASE_URL_CONFIGURED="${PROVIDER_BASE_URL_CONFIGURED:-false}"
+PROVIDER_API_URL_CONFIGURED="${PROVIDER_API_URL_CONFIGURED:-false}"
+
 if [ "$LLM_PROVIDER" = "anthropic" ]; then
   if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
     echo "::warning::ANTHROPIC_API_KEY not set — skipping LLM review"
@@ -411,6 +456,10 @@ EOF
 
   RESPONSE_TEXT=$(echo "$API_RESPONSE" | jq -r '.content[0].text // empty' 2>/dev/null || true)
 elif [ "$LLM_PROVIDER" = "heiyucode_claude_code" ]; then
+  PROVIDER_TRANSPORT="messages-api"
+  PROVIDER_HTTP_STATUS="n/a"
+  PROVIDER_AUTH_HEADER_KIND="n/a"
+
   if [ -z "$HEIYUCODE_TOKEN" ]; then
     write_provider_error_result "HeiyuCode token not configured" 0 0 /dev/null /dev/null
     exit 0
@@ -419,76 +468,138 @@ elif [ "$LLM_PROVIDER" = "heiyucode_claude_code" ]; then
   if ! [[ "$HEIYUCODE_CLIENT_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || [ "$HEIYUCODE_CLIENT_TIMEOUT_SECONDS" -lt 1 ]; then
     HEIYUCODE_CLIENT_TIMEOUT_SECONDS=420
   fi
-  if ! [[ "$HEIYUCODE_INSTALL_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || [ "$HEIYUCODE_INSTALL_TIMEOUT_SECONDS" -lt 1 ]; then
-    HEIYUCODE_INSTALL_TIMEOUT_SECONDS=120
-  fi
 
-  CLAUDE_BIN="$(command -v claude || true)"
-  if [ -z "$CLAUDE_BIN" ]; then
-    if ! command -v npm >/dev/null 2>&1; then
-      write_provider_error_result "claude CLI unavailable" 127 0 /dev/null /dev/null
-      exit 0
+  REQUEST_BODY="$(mktemp)"
+  API_RESPONSE="$(mktemp)"
+  API_ERR="$(mktemp)"
+  API_META="$(mktemp)"
+  jq -n \
+    --arg model "$LLM_MODEL" \
+    --argjson max_tokens "$LLM_MAX_TOKENS" \
+    --arg system "$SYSTEM_PROMPT_CONTENT" \
+    --arg user "$USER_MSG" \
+    '{model:$model,max_tokens:$max_tokens,system:$system,messages:[{role:"user",content:$user}]}' \
+    > "$REQUEST_BODY"
+
+  call_heiyucode_messages() {
+    local auth_header_kind="$1"
+    local response_file="$2"
+    local stderr_file="$3"
+    local meta_file="$4"
+    local auth_header
+
+    if [ "$auth_header_kind" = "x-api-key" ]; then
+      auth_header="x-api-key: ${HEIYUCODE_TOKEN}"
+    else
+      auth_header="Authorization: Bearer ${HEIYUCODE_TOKEN}"
     fi
 
-    NPM_OUT="$(mktemp)"
-    NPM_ERR="$(mktemp)"
-    install_started="$(date +%s)"
-    set +e
-    run_with_timeout "$HEIYUCODE_INSTALL_TIMEOUT_SECONDS" "$NPM_OUT" "$NPM_ERR" \
-      npm install --prefix /tmp/sentinel-claude-code-cli --no-save @anthropic-ai/claude-code@1.0.100
-    install_status="$?"
-    set -e
-    if [ "$install_status" -ne 0 ]; then
-      install_duration="$(( $(date +%s) - install_started ))"
-      if [ "$install_status" -eq 124 ]; then
-        write_provider_error_result "Claude Code client install timeout after ${HEIYUCODE_INSTALL_TIMEOUT_SECONDS}s" 124 "$install_duration" "$NPM_OUT" "$NPM_ERR"
-      else
-        write_provider_error_result "Claude Code client install failed" "$install_status" "$install_duration" "$NPM_OUT" "$NPM_ERR"
-      fi
-      exit 0
-    fi
-    CLAUDE_BIN="/tmp/sentinel-claude-code-cli/node_modules/.bin/claude"
-  fi
+    run_with_timeout "$HEIYUCODE_CLIENT_TIMEOUT_SECONDS" "$meta_file" "$stderr_file" \
+      curl -sS --max-time "$HEIYUCODE_CLIENT_TIMEOUT_SECONDS" \
+        -o "$response_file" \
+        -w "http_status=%{http_code}\ntime_total=%{time_total}\nsize_download=%{size_download}\n" \
+        -X POST "$HEIYUCODE_API_URL" \
+        -H "Content-Type: application/json" \
+        -H "anthropic-version: 2023-06-01" \
+        -H "$auth_header" \
+        --data-binary "@${REQUEST_BODY}"
+  }
 
-  CLAUDE_PROMPT="${SYSTEM_PROMPT_CONTENT}
+  extract_http_status() {
+    local meta_file="$1"
+    awk -F= '/^http_status=/{print $2; exit}' "$meta_file" 2>/dev/null || true
+  }
 
-${USER_MSG}"
-  CLAUDE_OUT="$(mktemp)"
-  CLAUDE_ERR="$(mktemp)"
+  is_retryable_http_status() {
+    case "$1" in
+      500|502|503|504|520|522|524)
+        return 0
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  }
+
   client_started="$(date +%s)"
   heiyucode_base_url_configured=false
   if [ -n "$HEIYUCODE_BASE_URL" ]; then
     heiyucode_base_url_configured=true
   fi
-  echo "HeiyuCode Claude Code client timeout_seconds=${HEIYUCODE_CLIENT_TIMEOUT_SECONDS} base_url_configured=${heiyucode_base_url_configured}"
+  PROVIDER_BASE_URL_CONFIGURED="$heiyucode_base_url_configured"
+  PROVIDER_API_URL_CONFIGURED=false
+  if [ -n "$HEIYUCODE_API_URL" ]; then
+    PROVIDER_API_URL_CONFIGURED=true
+  fi
+  echo "HeiyuCode Messages API timeout_seconds=${HEIYUCODE_CLIENT_TIMEOUT_SECONDS} base_url_configured=${heiyucode_base_url_configured}"
 
-  set +e
-  run_with_timeout "$HEIYUCODE_CLIENT_TIMEOUT_SECONDS" "$CLAUDE_OUT" "$CLAUDE_ERR" \
-    env \
-      ANTHROPIC_AUTH_TOKEN="$HEIYUCODE_TOKEN" \
-      ANTHROPIC_BASE_URL="$HEIYUCODE_BASE_URL" \
-      ANTHROPIC_MODEL="$LLM_MODEL" \
-      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
-      "$CLAUDE_BIN" -p "$CLAUDE_PROMPT" --output-format text --model "$LLM_MODEL"
-  client_status="$?"
-  set -e
-  client_duration="$(( $(date +%s) - client_started ))"
+  AUTH_HEADER_KIND="authorization_bearer"
+  HTTP_STATUS="n/a"
+  PROVIDER_AUTH_HEADER_KIND="$AUTH_HEADER_KIND"
+  PROVIDER_HTTP_STATUS="$HTTP_STATUS"
+
+  run_heiyucode_attempt() {
+    local auth_header_kind="$1"
+    PROVIDER_ATTEMPTS="$(( ${PROVIDER_ATTEMPTS:-0} + 1 ))"
+    set +e
+    call_heiyucode_messages "$auth_header_kind" "$API_RESPONSE" "$API_ERR" "$API_META"
+    client_status="$?"
+    set -e
+    client_duration="$(( $(date +%s) - client_started ))"
+    HTTP_STATUS="$(extract_http_status "$API_META")"
+    PROVIDER_HTTP_STATUS="$HTTP_STATUS"
+    PROVIDER_EXIT_CODE="$client_status"
+    PROVIDER_DURATION_SECONDS="$client_duration"
+    PROVIDER_STDOUT_BYTES="$(file_size_bytes "$API_RESPONSE")"
+    PROVIDER_STDERR_BYTES="$(file_size_bytes "$API_ERR")"
+  }
+
+  run_heiyucode_attempt "$AUTH_HEADER_KIND"
+
+  if [ "$client_status" -eq 0 ] && { [ "$HTTP_STATUS" = "401" ] || [ "$HTTP_STATUS" = "403" ]; }; then
+    AUTH_HEADER_KIND="x-api-key"
+    PROVIDER_AUTH_HEADER_KIND="$AUTH_HEADER_KIND"
+    run_heiyucode_attempt "$AUTH_HEADER_KIND"
+  fi
+
+  retryable_retries=0
+  while [ "$client_status" -eq 0 ] && is_retryable_http_status "$HTTP_STATUS" && [ "$retryable_retries" -lt 1 ]; do
+    retryable_retries="$(( retryable_retries + 1 ))"
+    echo "HeiyuCode Messages API HTTP ${HTTP_STATUS}; retrying once with auth_header_kind=${AUTH_HEADER_KIND}"
+    run_heiyucode_attempt "$AUTH_HEADER_KIND"
+  done
 
   if [ "$client_status" -eq 124 ]; then
-    write_provider_error_result "HeiyuCode Claude Code client timeout after ${HEIYUCODE_CLIENT_TIMEOUT_SECONDS}s" 124 "$client_duration" "$CLAUDE_OUT" "$CLAUDE_ERR"
+    write_provider_error_result "HeiyuCode Messages API timeout after ${HEIYUCODE_CLIENT_TIMEOUT_SECONDS}s" 124 "$client_duration" "$API_RESPONSE" "$API_ERR"
     exit 0
   fi
   if [ "$client_status" -ne 0 ]; then
-    write_provider_error_result "HeiyuCode Claude Code client error" "$client_status" "$client_duration" "$CLAUDE_OUT" "$CLAUDE_ERR"
+    write_provider_error_result "HeiyuCode Messages API curl error" "$client_status" "$client_duration" "$API_RESPONSE" "$API_ERR"
     exit 0
   fi
 
-  if [ ! -s "$CLAUDE_OUT" ]; then
-    write_provider_error_result "No text in response" 0 "$client_duration" "$CLAUDE_OUT" "$CLAUDE_ERR"
+  if ! [[ "$HTTP_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+    if [ "$HTTP_STATUS" = "401" ] || [ "$HTTP_STATUS" = "403" ]; then
+      write_provider_error_result "HeiyuCode Messages API auth error HTTP ${HTTP_STATUS}" 0 "$client_duration" "$API_RESPONSE" "$API_ERR"
+    else
+      write_provider_error_result "HeiyuCode Messages API HTTP ${HTTP_STATUS}" 0 "$client_duration" "$API_RESPONSE" "$API_ERR"
+    fi
     exit 0
   fi
 
-  RESPONSE_TEXT="$(cat "$CLAUDE_OUT")"
+  set +e
+  RESPONSE_TEXT="$(jq -r '[.content[]? | select(.type == "text") | .text] | join("\n\n")' "$API_RESPONSE" 2>"$API_ERR")"
+  parse_status="$?"
+  set -e
+  if [ "$parse_status" -ne 0 ]; then
+    write_provider_error_result "HeiyuCode Messages API returned invalid JSON" "$parse_status" "$client_duration" "$API_RESPONSE" "$API_ERR"
+    exit 0
+  fi
+
+  if [ -z "$RESPONSE_TEXT" ]; then
+    write_provider_error_result "No text in response" 0 "$client_duration" "$API_RESPONSE" "$API_ERR"
+    exit 0
+  fi
 fi
 
 if [ -z "$RESPONSE_TEXT" ]; then
@@ -500,6 +611,7 @@ EOF
 fi
 
 echo "Response received (${#RESPONSE_TEXT} chars)"
+echo "Provider diagnostics: provider=${LLM_PROVIDER} model=${LLM_MODEL} transport=${PROVIDER_TRANSPORT:-n/a} http_status=${PROVIDER_HTTP_STATUS:-n/a} auth_header_kind=${PROVIDER_AUTH_HEADER_KIND:-n/a} exit_code=${PROVIDER_EXIT_CODE:-0} attempts=${PROVIDER_ATTEMPTS:-0} duration_seconds=${PROVIDER_DURATION_SECONDS:-0} stdout_bytes=${PROVIDER_STDOUT_BYTES:-0} stderr_bytes=${PROVIDER_STDERR_BYTES:-0} base_url_configured=${PROVIDER_BASE_URL_CONFIGURED:-false} api_url_configured=${PROVIDER_API_URL_CONFIGURED:-false}"
 
 # Extract JSON from response
 REVIEW_JSON=$(echo "$RESPONSE_TEXT" | sed -n '/^{/,/^}/p' || true)
@@ -535,6 +647,16 @@ cat > "$RESULT_FILE" <<EOF
   "review_id": "llm-review",
   "provider": "$LLM_PROVIDER",
   "model": "$LLM_MODEL",
+  "transport": "${PROVIDER_TRANSPORT:-n/a}",
+  "http_status": "${PROVIDER_HTTP_STATUS:-n/a}",
+  "auth_header_kind": "${PROVIDER_AUTH_HEADER_KIND:-n/a}",
+  "exit_code": ${PROVIDER_EXIT_CODE:-0},
+  "attempts": ${PROVIDER_ATTEMPTS:-0},
+  "duration_seconds": ${PROVIDER_DURATION_SECONDS:-0},
+  "stdout_bytes": ${PROVIDER_STDOUT_BYTES:-0},
+  "stderr_bytes": ${PROVIDER_STDERR_BYTES:-0},
+  "base_url_configured": ${PROVIDER_BASE_URL_CONFIGURED:-false},
+  "api_url_configured": ${PROVIDER_API_URL_CONFIGURED:-false},
   "status": "completed",
   "verdict": "$VERDICT",
   "passed": $([[ "$PASSED" == true ]] && echo "true" || echo "false"),
