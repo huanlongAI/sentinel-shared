@@ -65,7 +65,7 @@ jobs:
           SYNCED=""
           MISSING=""
           SKIPPED=""
-          DRY_RUN="${{ inputs.dry_run || 'true' }}"
+          DRY_RUN="${{ github.event.inputs.dry_run || 'true' }}"
           REPORT=""
 
           gha_expr() {
@@ -236,7 +236,7 @@ jobs:
         run: |
           DRIFTED="${{ steps.drift.outputs.drifted }}"
           COUNT="${{ steps.drift.outputs.drift_count }}"
-          DRY_RUN="${{ inputs.dry_run || 'true' }}"
+          DRY_RUN="${{ github.event.inputs.dry_run || 'true' }}"
           BODY=$(cat /tmp/sync-report.md)
 
           if [ "$DRY_RUN" = "true" ]; then
