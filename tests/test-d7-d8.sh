@@ -94,6 +94,21 @@ let package = Package(
 EOF
 }
 
+date_offset_days() {
+  local days="$1"
+  if date -u -d "${days} days" +%Y-%m-%d >/dev/null 2>&1; then
+    date -u -d "${days} days" +%Y-%m-%d
+    return
+  fi
+
+  if [ "$days" -ge 0 ]; then
+    date -u -j -v+"${days}"d +%Y-%m-%d
+  else
+    local abs_days="${days#-}"
+    date -u -j -v-"${abs_days}"d +%Y-%m-%d
+  fi
+}
+
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
@@ -140,25 +155,27 @@ pass "D-8 warns on stale 0.x semver pin without blocking"
 D8_ACK_DIR="$TMP_ROOT/d8-ack"
 make_downstream_semver "$D8_ACK_DIR" "0.4.0-alpha"
 ACK_MSG="$TMP_ROOT/ack-message.txt"
-cat > "$ACK_MSG" <<'EOF'
+ACK_EXPIRES="$(date_offset_days 30)"
+cat > "$ACK_MSG" <<EOF
 test commit
 
 D-8-Acknowledged: sprint pin accepted
-D-8-Expires: 2026-05-26
+D-8-Expires: ${ACK_EXPIRES}
 EOF
 D8_ACK_OUTPUT=$(UPSTREAM_DIR="$UPSTREAM_DIR" DOWNSTREAM_DIR="$D8_ACK_DIR" D8_COMMIT_MESSAGE_FILE="$ACK_MSG" RESULTS_DIR="$TMP_ROOT/results-d8-ack" "$D8_SCRIPT")
-assert_contains "$D8_ACK_OUTPUT" "D-8 drift acknowledged until 2026-05-26"
+assert_contains "$D8_ACK_OUTPUT" "D-8 drift acknowledged until ${ACK_EXPIRES}"
 pass "D-8 honors unexpired acknowledgement trailer"
 
 # D-8 expired acknowledgement warns.
 D8_EXPIRED_DIR="$TMP_ROOT/d8-expired"
 make_downstream_semver "$D8_EXPIRED_DIR" "0.4.0-alpha"
 EXPIRED_MSG="$TMP_ROOT/expired-message.txt"
-cat > "$EXPIRED_MSG" <<'EOF'
+EXPIRED_DATE="$(date_offset_days -30)"
+cat > "$EXPIRED_MSG" <<EOF
 test commit
 
 D-8-Acknowledged: old sprint pin
-D-8-Expires: 2026-04-25
+D-8-Expires: ${EXPIRED_DATE}
 EOF
 D8_EXPIRED_OUTPUT=$(UPSTREAM_DIR="$UPSTREAM_DIR" DOWNSTREAM_DIR="$D8_EXPIRED_DIR" D8_COMMIT_MESSAGE_FILE="$EXPIRED_MSG" RESULTS_DIR="$TMP_ROOT/results-d8-expired" "$D8_SCRIPT")
 assert_contains "$D8_EXPIRED_OUTPUT" "::warning::D-8-Acknowledged trailer expired"
