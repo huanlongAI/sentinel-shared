@@ -18,4 +18,15 @@ if [ "$count" -ne 2 ]; then
   fail "caller-sync should default scheduled runs to dry_run=true while preserving workflow_dispatch dry_run=false"
 fi
 
+for expected in \
+  'FAILED=""' \
+  'failed_count=' \
+  'head=huanlongAI:sentinel-caller-sync' \
+  'File update failed' \
+  'exit 1'
+do
+  grep -q "$expected" "$CALLER_SYNC_WORKFLOW" \
+    || fail "caller-sync workflow missing failure-handling marker: $expected"
+done
+
 echo "caller-sync dry_run input handling test passed"
