@@ -1,0 +1,9 @@
+sentinel_version: "1.0"
+repo_type: infra
+enabled_dimensions:
+  - software_engineering
+llm:
+  model: "claude-sonnet-4-6"
+  max_output_tokens: 4096
+  confidence_threshold: 0.7
+  checks: []
