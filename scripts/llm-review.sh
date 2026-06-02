@@ -10,6 +10,18 @@ SENTINEL_SHARED_DIR="${SENTINEL_SHARED_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")
 
 mkdir -p "$RESULTS_DIR"
 
+cleanup_temp_files() {
+  rm -f \
+    "${SYSTEM_PROMPT_FILE:-}" \
+    "${USER_MSG_FILE:-}" \
+    "${REQUEST_BODY:-}" \
+    "${API_RESPONSE_FILE:-}" \
+    "${API_ERR_FILE:-}" \
+    "${API_META_FILE:-}"
+}
+
+trap cleanup_temp_files EXIT
+
 # --- YAML helpers (no yq) ---
 trim_yaml_value() {
   sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/^[[:space:]]+|[[:space:]]+$//g' | tr -d '"' | tr -d "'"
@@ -400,11 +412,28 @@ Respond ONLY with a JSON object (no markdown wrapping):
   \"summary\": \"one-line summary\"
 }"
 
+SYSTEM_PROMPT_FILE="$(mktemp)"
+USER_MSG_FILE="$(mktemp)"
+REQUEST_BODY="$(mktemp)"
+
+printf '%s' "$SYSTEM_PROMPT_CONTENT" > "$SYSTEM_PROMPT_FILE"
+printf '%s' "$USER_MSG" > "$USER_MSG_FILE"
+
+build_messages_request_body() {
+  local request_body_file="$1"
+  jq -n \
+    --arg model "$LLM_MODEL" \
+    --argjson max_tokens "$LLM_MAX_TOKENS" \
+    --rawfile system "$SYSTEM_PROMPT_FILE" \
+    --rawfile user "$USER_MSG_FILE" \
+    '{model:$model,max_tokens:$max_tokens,system:$system,messages:[{role:"user",content:$user}]}' \
+    > "$request_body_file"
+}
+
+build_messages_request_body "$REQUEST_BODY"
+
 # --- Call provider ---
 echo "Calling LLM provider ($LLM_PROVIDER / $LLM_MODEL)..."
-
-SYSTEM_JSON=$(echo "$SYSTEM_PROMPT_CONTENT" | jq -Rsa .)
-USER_JSON=$(echo "$USER_MSG" | jq -Rsa .)
 
 RESPONSE_TEXT=""
 PROVIDER_TRANSPORT="${PROVIDER_TRANSPORT:-n/a}"
@@ -429,12 +458,7 @@ if [ "$LLM_PROVIDER" = "anthropic" ]; then
     -H "Content-Type: application/json" \
     -H "x-api-key: ${ANTHROPIC_API_KEY}" \
     -H "anthropic-version: 2023-06-01" \
-    -d "{
-      \"model\": \"${LLM_MODEL}\",
-      \"max_tokens\": ${LLM_MAX_TOKENS},
-      \"system\": ${SYSTEM_JSON},
-      \"messages\": [{\"role\": \"user\", \"content\": ${USER_JSON}}]
-    }" \
+    --data-binary "@${REQUEST_BODY}" \
     "https://api.anthropic.com/v1/messages" 2>&1) || true
 
   if [ -z "$API_RESPONSE" ]; then
@@ -469,17 +493,9 @@ elif [ "$LLM_PROVIDER" = "heiyucode_claude_code" ]; then
     HEIYUCODE_CLIENT_TIMEOUT_SECONDS=420
   fi
 
-  REQUEST_BODY="$(mktemp)"
-  API_RESPONSE="$(mktemp)"
-  API_ERR="$(mktemp)"
-  API_META="$(mktemp)"
-  jq -n \
-    --arg model "$LLM_MODEL" \
-    --argjson max_tokens "$LLM_MAX_TOKENS" \
-    --arg system "$SYSTEM_PROMPT_CONTENT" \
-    --arg user "$USER_MSG" \
-    '{model:$model,max_tokens:$max_tokens,system:$system,messages:[{role:"user",content:$user}]}' \
-    > "$REQUEST_BODY"
+  API_RESPONSE_FILE="$(mktemp)"
+  API_ERR_FILE="$(mktemp)"
+  API_META_FILE="$(mktemp)"
 
   call_heiyucode_messages() {
     local auth_header_kind="$1"
@@ -542,16 +558,16 @@ elif [ "$LLM_PROVIDER" = "heiyucode_claude_code" ]; then
     local auth_header_kind="$1"
     PROVIDER_ATTEMPTS="$(( ${PROVIDER_ATTEMPTS:-0} + 1 ))"
     set +e
-    call_heiyucode_messages "$auth_header_kind" "$API_RESPONSE" "$API_ERR" "$API_META"
+    call_heiyucode_messages "$auth_header_kind" "$API_RESPONSE_FILE" "$API_ERR_FILE" "$API_META_FILE"
     client_status="$?"
     set -e
     client_duration="$(( $(date +%s) - client_started ))"
-    HTTP_STATUS="$(extract_http_status "$API_META")"
+    HTTP_STATUS="$(extract_http_status "$API_META_FILE")"
     PROVIDER_HTTP_STATUS="$HTTP_STATUS"
     PROVIDER_EXIT_CODE="$client_status"
     PROVIDER_DURATION_SECONDS="$client_duration"
-    PROVIDER_STDOUT_BYTES="$(file_size_bytes "$API_RESPONSE")"
-    PROVIDER_STDERR_BYTES="$(file_size_bytes "$API_ERR")"
+    PROVIDER_STDOUT_BYTES="$(file_size_bytes "$API_RESPONSE_FILE")"
+    PROVIDER_STDERR_BYTES="$(file_size_bytes "$API_ERR_FILE")"
   }
 
   run_heiyucode_attempt "$AUTH_HEADER_KIND"
@@ -570,34 +586,34 @@ elif [ "$LLM_PROVIDER" = "heiyucode_claude_code" ]; then
   done
 
   if [ "$client_status" -eq 124 ]; then
-    write_provider_error_result "HeiyuCode Messages API timeout after ${HEIYUCODE_CLIENT_TIMEOUT_SECONDS}s" 124 "$client_duration" "$API_RESPONSE" "$API_ERR"
+    write_provider_error_result "HeiyuCode Messages API timeout after ${HEIYUCODE_CLIENT_TIMEOUT_SECONDS}s" 124 "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
     exit 0
   fi
   if [ "$client_status" -ne 0 ]; then
-    write_provider_error_result "HeiyuCode Messages API curl error" "$client_status" "$client_duration" "$API_RESPONSE" "$API_ERR"
+    write_provider_error_result "HeiyuCode Messages API curl error" "$client_status" "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
     exit 0
   fi
 
   if ! [[ "$HTTP_STATUS" =~ ^2[0-9][0-9]$ ]]; then
     if [ "$HTTP_STATUS" = "401" ] || [ "$HTTP_STATUS" = "403" ]; then
-      write_provider_error_result "HeiyuCode Messages API auth error HTTP ${HTTP_STATUS}" 0 "$client_duration" "$API_RESPONSE" "$API_ERR"
+      write_provider_error_result "HeiyuCode Messages API auth error HTTP ${HTTP_STATUS}" 0 "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
     else
-      write_provider_error_result "HeiyuCode Messages API HTTP ${HTTP_STATUS}" 0 "$client_duration" "$API_RESPONSE" "$API_ERR"
+      write_provider_error_result "HeiyuCode Messages API HTTP ${HTTP_STATUS}" 0 "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
     fi
     exit 0
   fi
 
   set +e
-  RESPONSE_TEXT="$(jq -r '[.content[]? | select(.type == "text") | .text] | join("\n\n")' "$API_RESPONSE" 2>"$API_ERR")"
+  RESPONSE_TEXT="$(jq -r '[.content[]? | select(.type == "text") | .text] | join("\n\n")' "$API_RESPONSE_FILE" 2>"$API_ERR_FILE")"
   parse_status="$?"
   set -e
   if [ "$parse_status" -ne 0 ]; then
-    write_provider_error_result "HeiyuCode Messages API returned invalid JSON" "$parse_status" "$client_duration" "$API_RESPONSE" "$API_ERR"
+    write_provider_error_result "HeiyuCode Messages API returned invalid JSON" "$parse_status" "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
     exit 0
   fi
 
   if [ -z "$RESPONSE_TEXT" ]; then
-    write_provider_error_result "No text in response" 0 "$client_duration" "$API_RESPONSE" "$API_ERR"
+    write_provider_error_result "No text in response" 0 "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
     exit 0
   fi
 fi
