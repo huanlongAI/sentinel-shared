@@ -33,6 +33,28 @@ EOF
   git -C "$dir" commit -q -m "change"
 }
 
+append_large_anchor_files() {
+  local dir="$1"
+  local count="${2:-48}"
+  local size_bytes="${3:-45000}"
+  local i anchor_path
+
+  mkdir -p "$dir/anchors"
+  cat >> "$dir/.sentinel/config.yaml" <<'YAML'
+anchor_files:
+YAML
+
+  for i in $(seq 1 "$count"); do
+    anchor_path="$dir/anchors/context-${i}.md"
+    {
+      printf 'anchor-%s\n' "$i"
+      head -c "$size_bytes" /dev/zero | tr '\0' 'x'
+      printf '\n'
+    } > "$anchor_path"
+    printf '  context_%s: "anchors/context-%s.md"\n' "$i" "$i" >> "$dir/.sentinel/config.yaml"
+  done
+}
+
 test_anthropic_provider_uses_messages_api() {
   local tmp fake_bin calls
   tmp="$(mktemp -d)"
@@ -70,6 +92,8 @@ write_fake_heiyucode_curl() {
   cat > "$curl_path" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
+
+printf '%s\n' "$*" > "$FAKE_CALL_DIR/curl.args"
 
 out=""
 while [ "$#" -gt 0 ]; do
@@ -146,6 +170,19 @@ SH
   chmod +x "$curl_path"
 }
 
+write_recording_jq() {
+  local jq_path="$1"
+  local real_jq
+  real_jq="$(command -v jq)"
+  cat > "$jq_path" <<SH
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\$*" >> "\$FAKE_CALL_DIR/jq.args"
+exec "$real_jq" "\$@"
+SH
+  chmod +x "$jq_path"
+}
+
 test_heiyucode_provider_uses_messages_api() {
   local tmp fake_bin calls
   tmp="$(mktemp -d)"
@@ -155,6 +192,7 @@ test_heiyucode_provider_uses_messages_api() {
   make_repo "$tmp/repo"
 
   write_fake_heiyucode_curl "$fake_bin/curl"
+  write_recording_jq "$fake_bin/jq"
 
   (
     cd "$tmp/repo"
@@ -169,6 +207,15 @@ test_heiyucode_provider_uses_messages_api() {
   )
 
   grep -q "Authorization: Bearer heiyucode-test-token" "$calls/curl.headers" || fail "HeiyuCode bearer token not used"
+  grep -q -- '--data-binary @' "$calls/curl.args" || fail "HeiyuCode request body should be sent via file-backed --data-binary"
+  grep -q -- '--rawfile system' "$calls/jq.args" || fail "HeiyuCode request body should load system prompt from file"
+  grep -q -- '--rawfile user' "$calls/jq.args" || fail "HeiyuCode request body should load user prompt from file"
+  if grep -q -- '--arg system ' "$calls/jq.args"; then
+    fail "HeiyuCode request body should not pass system prompt via --arg"
+  fi
+  if grep -q -- '--arg user ' "$calls/jq.args"; then
+    fail "HeiyuCode request body should not pass user prompt via --arg"
+  fi
   jq -e '
     .provider == "heiyucode_claude_code"
     and .transport == "messages-api"
@@ -456,7 +503,84 @@ test_heiyucode_provider_retries_x_api_key_after_bearer_auth_failure() {
   ' "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "x-api-key fallback result mismatch"
 }
 
+test_request_body_uses_file_backed_payload_for_anthropic() {
+  local tmp fake_bin calls
+  tmp="$(mktemp -d)"
+  fake_bin="$tmp/bin"
+  calls="$tmp/calls"
+  mkdir -p "$fake_bin" "$calls"
+  make_repo "$tmp/repo"
+
+  cat > "$fake_bin/curl" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" > "$FAKE_CALL_DIR/curl.args"
+cat <<'JSON'
+{"content":[{"text":"{\"verdict\":\"PASS\",\"checks\":{\"GPC-003\":{\"verdict\":\"PASS\",\"confidence\":0.95,\"reason\":\"ok\"}},\"summary\":\"ok\"}"}]}
+JSON
+SH
+  chmod +x "$fake_bin/curl"
+  write_recording_jq "$fake_bin/jq"
+
+  (
+    cd "$tmp/repo"
+    PATH="$fake_bin:$PATH" \
+      FAKE_CALL_DIR="$calls" \
+      SENTINEL_LLM_PROVIDER="anthropic" \
+      ANTHROPIC_API_KEY="anthropic-test-key" \
+      "$ROOT_DIR/scripts/llm-review.sh"
+  )
+
+  grep -q -- '--data-binary @' "$calls/curl.args" || fail "Anthropic request body should be sent via file-backed --data-binary"
+  grep -q -- '--rawfile system' "$calls/jq.args" || fail "Anthropic request body should load system prompt from file"
+  grep -q -- '--rawfile user' "$calls/jq.args" || fail "Anthropic request body should load user prompt from file"
+  if grep -q -- '--arg system ' "$calls/jq.args"; then
+    fail "Anthropic request body should not pass system prompt via --arg"
+  fi
+  if grep -q -- '--arg user ' "$calls/jq.args"; then
+    fail "Anthropic request body should not pass user prompt via --arg"
+  fi
+}
+
+test_large_prompt_uses_file_backed_payload_without_arg_list_overflow() {
+  local tmp fake_bin calls
+  tmp="$(mktemp -d)"
+  fake_bin="$tmp/bin"
+  calls="$tmp/calls"
+  mkdir -p "$fake_bin" "$calls"
+  make_repo "$tmp/repo"
+  append_large_anchor_files "$tmp/repo"
+
+  cat > "$fake_bin/curl" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" > "$FAKE_CALL_DIR/curl.args"
+cat <<'JSON'
+{"content":[{"text":"{\"verdict\":\"PASS\",\"checks\":{\"GPC-003\":{\"verdict\":\"PASS\",\"confidence\":0.95,\"reason\":\"ok\"}},\"summary\":\"ok\"}"}]}
+JSON
+SH
+  chmod +x "$fake_bin/curl"
+  write_recording_jq "$fake_bin/jq"
+
+  (
+    cd "$tmp/repo"
+    PATH="$fake_bin:$PATH" \
+      FAKE_CALL_DIR="$calls" \
+      SENTINEL_LLM_PROVIDER="anthropic" \
+      ANTHROPIC_API_KEY="anthropic-test-key" \
+      "$ROOT_DIR/scripts/llm-review.sh"
+  )
+
+  grep -q -- '--data-binary @' "$calls/curl.args" || fail "Large prompt request body should be sent via file-backed --data-binary"
+  grep -q -- '--rawfile system' "$calls/jq.args" || fail "Large prompt request body should load system prompt from file"
+  grep -q -- '--rawfile user' "$calls/jq.args" || fail "Large prompt request body should load user prompt from file"
+  jq -e '.provider == "anthropic" and .passed == true' \
+    "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "Large prompt result metadata mismatch"
+}
+
 test_anthropic_provider_uses_messages_api
+test_request_body_uses_file_backed_payload_for_anthropic
+test_large_prompt_uses_file_backed_payload_without_arg_list_overflow
 test_heiyucode_provider_uses_messages_api
 test_heiyucode_provider_hard_fails_explicit_fail_verdict
 test_heiyucode_provider_timeout_escalates_without_waiting_for_job_timeout
