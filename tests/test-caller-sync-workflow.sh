@@ -30,7 +30,18 @@ if grep -q 'Open sync PR already exists for ${REPO}, skipping.' "$CALLER_SYNC_WO
   fail "caller-sync must refresh existing sentinel-caller-sync PR branches instead of skipping them"
 fi
 
+if grep -Fq "[ '\$DRY_RUN' = 'true' ]" "$CALLER_SYNC_WORKFLOW"; then
+  fail "caller-sync summary must evaluate DRY_RUN value instead of the literal string"
+fi
+
 for expected in \
+  'target_repos:' \
+  'TARGET_REPOS_INPUT=' \
+  'SELECTED_REPOS=' \
+  'INVALID_TARGETS=' \
+  'invalid_target' \
+  'for REPO in $SELECTED_REPOS' \
+  '[ "$DRY_RUN" = "true" ]' \
   'FAILED=""' \
   'failed_count=' \
   'head=huanlongAI:sentinel-caller-sync' \

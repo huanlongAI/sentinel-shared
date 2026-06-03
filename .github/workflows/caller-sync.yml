@@ -7,6 +7,11 @@ on:
         required: false
         default: true
         type: boolean
+      target_repos:
+        description: Optional space-separated downstream repo subset
+        required: false
+        default: ''
+        type: string
   schedule:
     - cron: '0 0 * * 0'
 
@@ -67,7 +72,46 @@ jobs:
           SKIPPED=""
           FAILED=""
           DRY_RUN="${{ github.event.inputs.dry_run || 'true' }}"
+          TARGET_REPOS_INPUT="${{ github.event.inputs.target_repos || '' }}"
+          SELECTED_REPOS=""
+          INVALID_TARGETS=""
           REPORT=""
+
+          if [ -z "$TARGET_REPOS_INPUT" ]; then
+            SELECTED_REPOS="$DOWNSTREAM_REPOS"
+          else
+            for REQUESTED_REPO in $TARGET_REPOS_INPUT; do
+              case " $DOWNSTREAM_REPOS " in
+                *" $REQUESTED_REPO "*)
+                  SELECTED_REPOS="${SELECTED_REPOS}${REQUESTED_REPO} "
+                  ;;
+                *)
+                  INVALID_TARGETS="${INVALID_TARGETS}${REQUESTED_REPO},"
+                  ;;
+              esac
+            done
+          fi
+
+          if [ -n "$INVALID_TARGETS" ]; then
+            FAILED="invalid_target:${INVALID_TARGETS%,},"
+            echo "::error::Invalid caller-sync target(s): ${INVALID_TARGETS%,}"
+            echo "drifted=" >> "$GITHUB_OUTPUT"
+            echo "drift_count=0" >> "$GITHUB_OUTPUT"
+            echo "synced=" >> "$GITHUB_OUTPUT"
+            echo "missing=" >> "$GITHUB_OUTPUT"
+            echo "failed=${FAILED}" >> "$GITHUB_OUTPUT"
+            echo "failed_count=1" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Caller Workflow Sync Report"
+              echo ""
+              echo "Mode: $( [ "$DRY_RUN" = "true" ] && echo 'DRY RUN (preview only)' || echo 'LIVE (PRs created)')"
+              echo "Targets: ${TARGET_REPOS_INPUT}"
+              echo "Synced: 0 | Drifted: 0 | Missing: 0 | Failed: 1"
+              echo ""
+              echo "Failed targets: ${FAILED%,}"
+            } > /tmp/sync-report.md
+            exit 0
+          fi
 
           gha_expr() {
             printf '$''{{ %s }}' "$1"
@@ -88,7 +132,7 @@ jobs:
             | grep -v '^$' \
             | sort)
 
-          for REPO in $DOWNSTREAM_REPOS; do
+          for REPO in $SELECTED_REPOS; do
             echo "::group::Checking ${REPO}"
 
             # Fetch current caller workflow
@@ -291,7 +335,8 @@ jobs:
           {
             echo "## Caller Workflow Sync Report"
             echo ""
-            echo "Mode: $( [ '$DRY_RUN' = 'true' ] && echo 'DRY RUN (preview only)' || echo 'LIVE (PRs created)')"
+            echo "Mode: $( [ "$DRY_RUN" = "true" ] && echo 'DRY RUN (preview only)' || echo 'LIVE (PRs created)')"
+            echo "Targets: ${SELECTED_REPOS}"
             echo "Synced: ${SYNC_COUNT} | Drifted: ${DRIFT_COUNT} | Missing: ${MISS_COUNT} | Failed: ${FAIL_COUNT}"
             if [ "$FAIL_COUNT" != "0" ]; then
               echo ""
