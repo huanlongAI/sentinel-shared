@@ -21,6 +21,9 @@ if grep -q "default: 'false'" "$CALLER_SYNC_WORKFLOW"; then
   fail "caller-sync canonical skip_llm boolean input default must stay boolean false, not string 'false'"
 fi
 
+grep -Fq "github.event_name == 'repository_dispatch' || fromJSON(github.event.inputs.skip_llm || 'false')" "$CALLER_SYNC_WORKFLOW" \
+  || fail "caller-sync canonical template must skip LLM during sentinel-cascade repository_dispatch"
+
 count="$(grep -c "github.event.inputs.dry_run || 'true'" "$CALLER_SYNC_WORKFLOW" || true)"
 if [ "$count" -ne 2 ]; then
   fail "caller-sync should default scheduled runs to dry_run=true while preserving workflow_dispatch dry_run=false"
