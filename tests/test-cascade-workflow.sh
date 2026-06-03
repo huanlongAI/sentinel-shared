@@ -26,6 +26,11 @@ workflow="$(cat "$WORKFLOW")"
 assert_contains "$workflow" "::error::Some dispatches failed:"
 assert_contains "$workflow" 'exit 1'
 assert_contains "$workflow" 'DISPATCH_FAILED="${{ needs.fan-out.outputs.failed }}"'
+assert_contains "$workflow" 'CASCADE_WAIT_TIMEOUT_SECONDS="${CASCADE_WAIT_TIMEOUT_SECONDS:-900}"'
+assert_contains "$workflow" 'CASCADE_POLL_INTERVAL_SECONDS="${CASCADE_POLL_INTERVAL_SECONDS:-20}"'
+assert_contains "$workflow" 'deadline=$((SECONDS + CASCADE_WAIT_TIMEOUT_SECONDS))'
+assert_contains "$workflow" 'while true; do'
+assert_contains "$workflow" 'if [ "$SKIP" -eq 0 ] || [ "$SECONDS" -ge "$deadline" ]; then'
 assert_contains "$workflow" 'if [ -n "$DISPATCH_FAILED" ] || [ "$FAIL" -gt 0 ] || [ "$SKIP" -gt 0 ]; then'
 assert_contains "$workflow" '::error::Cascade verification incomplete or failed:'
 assert_contains "$workflow" "always() && (steps.results.outputs.fail != '0' || steps.results.outputs.skip != '0' || needs.fan-out.outputs.failed != '')"
