@@ -5,7 +5,7 @@ on:
       dry_run:
         description: Preview only, do not create PRs
         required: false
-        default: 'true'
+        default: true
         type: boolean
   schedule:
     - cron: '0 0 * * 0'
@@ -33,7 +33,7 @@ env:
           skip_llm:
             description: 'Skip LLM review layer'
             required: false
-            default: 'false'
+            default: false
             type: boolean
     permissions:
       contents: read
