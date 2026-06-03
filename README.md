@@ -27,3 +27,30 @@ Reusable workflow secrets：
 - `HEIYUCODE_API_KEY`
 
 HeiyuCode 路由会优先读取 `HEIYUCODE_AUTH_TOKEN`，再读取 `HEIYUCODE_API_KEY`。默认先按 `Authorization: Bearer` 调用，若返回 401/403，再用 `x-api-key` 重试一次；日志只记录 header 类型，不输出 secret 值。
+
+## Owner-reviewed Override
+
+`scripts/owner-reviewed-override.sh` 只处理 `llm-review` 的 `ESCALATE` verdict。它不覆盖 deterministic precheck failure、LLM `FAIL`、provider/runtime error，也不覆盖旧 head SHA 的评论。
+
+调用仓库需要在 `.sentinel/config.yaml` 或其 `policy_file` 指向的 YAML 中显式配置允许评论的 gate owner：
+
+```yaml
+owner_reviewed_override_actors:
+  - github-handle
+```
+
+标准 GitHub PR 评论模板：
+
+```markdown
+### Sentinel owner-reviewed override
+
+sentinel-owner-reviewed-override: approved
+head_sha: <current-pr-head-sha>
+deterministic checks: PASS
+llm-review: ESCALATE
+follow-up: <sentinel-policy-or-review-standard-issue-url>
+
+结论：<owner-reviewed reason>
+```
+
+聚合结果会保留原始 `llm-review` ESCALATE 事实，并输出 `gate_result=OWNER_REVIEWED_PASS`，用于区分普通 PASS 与人审确认后的通过。

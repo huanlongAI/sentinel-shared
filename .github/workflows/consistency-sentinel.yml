@@ -114,6 +114,18 @@ jobs:
           SENTINEL_LLM_PROVIDER: ${{ inputs.llm_provider }}
         run: .sentinel-shared/scripts/llm-review.sh
 
+      # ---- Owner-reviewed override for LLM ESCALATE ----
+      - name: "Owner-reviewed override 检查"
+        if: always() && github.event_name == 'pull_request' && inputs.skip_llm != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          REQUIRED_DETERMINISTIC_RESULTS="d1-changelog.json d2-terminology.json d3-cascade.json d4-directory.json d5-capability-source.json d6-brand-token.json d10-agent-governance.json"
+          REQUIRED_DETERMINISTIC_RESULT_FILES="$REQUIRED_DETERMINISTIC_RESULTS" .sentinel-shared/scripts/owner-reviewed-override.sh
+
       # ---- 判定聚合 ----
       - name: "聚合判定 & 生成报告"
         id: aggregate
