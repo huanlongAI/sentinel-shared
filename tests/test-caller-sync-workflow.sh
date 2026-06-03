@@ -26,10 +26,21 @@ if [ "$count" -ne 2 ]; then
   fail "caller-sync should default scheduled runs to dry_run=true while preserving workflow_dispatch dry_run=false"
 fi
 
+if grep -q 'Open sync PR already exists for ${REPO}, skipping.' "$CALLER_SYNC_WORKFLOW"; then
+  fail "caller-sync must refresh existing sentinel-caller-sync PR branches instead of skipping them"
+fi
+
 for expected in \
   'FAILED=""' \
   'failed_count=' \
   'head=huanlongAI:sentinel-caller-sync' \
+  'EXISTING_PR_NUMBER=' \
+  'EXISTING_PR_AUTOSYNC=' \
+  'existing_pr_not_autosync' \
+  'REFRESH_REF_RESULT=' \
+  'Branch refresh failed' \
+  'Existing sync PR refreshed' \
+  'force: true' \
   'File update failed' \
   'exit 1'
 do
