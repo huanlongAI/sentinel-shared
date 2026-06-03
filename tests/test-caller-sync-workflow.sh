@@ -35,6 +35,11 @@ if grep -Fq "[ '\$DRY_RUN' = 'true' ]" "$CALLER_SYNC_WORKFLOW"; then
 fi
 
 for expected in \
+  'Consistency Sentinel -- MIRA P-2 Consistency Gate' \
+  'NOTE: permissions MUST be in caller, not in reusable workflow' \
+  '@main reusable workflow reference is intentional for this thin caller projection.' \
+  'LLM provider credentials are consumed only by sentinel-shared provider router.' \
+  'HeiyuCode is preferred when configured; Anthropic remains the fallback provider.' \
   'target_repos:' \
   'TARGET_REPOS_INPUT=' \
   'SELECTED_REPOS=' \
