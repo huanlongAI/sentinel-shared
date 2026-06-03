@@ -8,6 +8,14 @@ fail() {
   exit 1
 }
 
+assert_contains() {
+  local haystack="$1"
+  local needle="$2"
+  if [[ "$haystack" != *"$needle"* ]]; then
+    fail "Expected output to contain: $needle"
+  fi
+}
+
 make_repo() {
   local dir="$1"
   mkdir -p "$dir/.sentinel/results" "$dir/.sentinel/prompts"
@@ -133,6 +141,9 @@ case "${FAKE_CURL_MODE}" in
     ;;
   fail)
     write_response 200 '{"content":[{"type":"text","text":"{\"verdict\":\"FAIL\",\"checks\":{\"GPC-003\":{\"verdict\":\"FAIL\",\"confidence\":0.98,\"reason\":\"policy conflict\"}},\"summary\":\"fail\"}"}]}'
+    ;;
+  escalate)
+    write_response 200 '{"content":[{"type":"text","text":"{\"verdict\":\"ESCALATE\",\"checks\":{\"GPC-003\":{\"verdict\":\"ESCALATE\",\"confidence\":0.80,\"reason\":\"needs owner review\"}},\"summary\":\"escalate\"}"}]}'
     ;;
   sleep)
     sleep 2
@@ -264,7 +275,109 @@ test_heiyucode_provider_hard_fails_explicit_fail_verdict() {
     "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "Explicit FAIL result mismatch"
 }
 
-test_heiyucode_provider_timeout_escalates_without_waiting_for_job_timeout() {
+test_anthropic_api_error_fails_closed() {
+  local tmp fake_bin calls output code
+  tmp="$(mktemp -d)"
+  fake_bin="$tmp/bin"
+  calls="$tmp/calls"
+  mkdir -p "$fake_bin" "$calls"
+  make_repo "$tmp/repo"
+
+  cat > "$fake_bin/curl" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" > "$FAKE_CALL_DIR/curl.args"
+cat <<'JSON'
+{"error":{"message":"provider unavailable"}}
+JSON
+SH
+  chmod +x "$fake_bin/curl"
+
+  set +e
+  output=$(
+    cd "$tmp/repo" && \
+      PATH="$fake_bin:$PATH" \
+      FAKE_CALL_DIR="$calls" \
+      SENTINEL_LLM_PROVIDER="anthropic" \
+      ANTHROPIC_API_KEY="anthropic-test-key" \
+      "$ROOT_DIR/scripts/llm-review.sh" 2>&1
+  )
+  code=$?
+  set -e
+
+  [ "$code" -ne 0 ] || fail "Anthropic API errors must fail closed"
+  assert_contains "$output" "fail closed"
+  jq -e '.provider == "anthropic" and .status == "error" and .passed == false and .escalate == true' \
+    "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "Anthropic API error result must fail"
+}
+
+test_anthropic_empty_text_fails_closed() {
+  local tmp fake_bin calls output code
+  tmp="$(mktemp -d)"
+  fake_bin="$tmp/bin"
+  calls="$tmp/calls"
+  mkdir -p "$fake_bin" "$calls"
+  make_repo "$tmp/repo"
+
+  cat > "$fake_bin/curl" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" > "$FAKE_CALL_DIR/curl.args"
+cat <<'JSON'
+{"content":[{"text":""}]}
+JSON
+SH
+  chmod +x "$fake_bin/curl"
+
+  set +e
+  output=$(
+    cd "$tmp/repo" && \
+      PATH="$fake_bin:$PATH" \
+      FAKE_CALL_DIR="$calls" \
+      SENTINEL_LLM_PROVIDER="anthropic" \
+      ANTHROPIC_API_KEY="anthropic-test-key" \
+      "$ROOT_DIR/scripts/llm-review.sh" 2>&1
+  )
+  code=$?
+  set -e
+
+  [ "$code" -ne 0 ] || fail "Empty provider text must fail closed"
+  assert_contains "$output" "fail closed"
+  jq -e '.provider == "anthropic" and .status == "error" and .passed == false and .escalate == true' \
+    "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "Empty response result must fail"
+}
+
+test_heiyucode_provider_hard_fails_explicit_escalate_verdict() {
+  local tmp fake_bin calls status
+  tmp="$(mktemp -d)"
+  fake_bin="$tmp/bin"
+  calls="$tmp/calls"
+  mkdir -p "$fake_bin" "$calls"
+  make_repo "$tmp/repo"
+
+  write_fake_heiyucode_curl "$fake_bin/curl"
+
+  set +e
+  (
+    cd "$tmp/repo"
+    PATH="$fake_bin:$PATH" \
+      FAKE_CALL_DIR="$calls" \
+      FAKE_CURL_MODE="escalate" \
+      SENTINEL_LLM_PROVIDER="heiyucode" \
+      HEIYUCODE_AUTH_TOKEN="heiyucode-test-token" \
+      HEIYUCODE_BASE_URL="https://www.heiyucode.com" \
+      HEIYUCODE_MODEL="claude-heiyu-test" \
+      "$ROOT_DIR/scripts/llm-review.sh"
+  )
+  status="$?"
+  set -e
+
+  [ "$status" -ne 0 ] || fail "Explicit ESCALATE verdict should hard fail"
+  jq -e '.provider == "heiyucode_claude_code" and .verdict == "ESCALATE" and .passed == false' \
+    "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "Explicit ESCALATE result mismatch"
+}
+
+test_heiyucode_provider_timeout_fails_closed_without_waiting_for_job_timeout() {
   local tmp fake_bin calls status started elapsed
   tmp="$(mktemp -d)"
   fake_bin="$tmp/bin"
@@ -292,7 +405,7 @@ test_heiyucode_provider_timeout_escalates_without_waiting_for_job_timeout() {
   set -e
   elapsed="$(( $(date +%s) - started ))"
 
-  [ "$status" -eq 0 ] || fail "Timeout should be non-blocking ESCALATE"
+  [ "$status" -ne 0 ] || fail "Timeout should fail closed"
   [ "$elapsed" -lt 6 ] || fail "Timeout path waited too long: ${elapsed}s"
   jq -e '
     .provider == "heiyucode_claude_code"
@@ -300,7 +413,7 @@ test_heiyucode_provider_timeout_escalates_without_waiting_for_job_timeout() {
     and .status == "error"
     and .error_type == "provider_error"
     and (.reason | test("timeout"))
-    and .passed == true
+    and .passed == false
     and .escalate == true
     and .exit_code == 124
     and .duration_seconds >= 1
@@ -308,7 +421,7 @@ test_heiyucode_provider_timeout_escalates_without_waiting_for_job_timeout() {
   ' "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "Timeout provider diagnostics mismatch"
 }
 
-test_heiyucode_provider_nonzero_exit_escalates_with_diagnostics() {
+test_heiyucode_provider_nonzero_exit_fails_closed_with_diagnostics() {
   local tmp fake_bin calls status
   tmp="$(mktemp -d)"
   fake_bin="$tmp/bin"
@@ -333,14 +446,14 @@ test_heiyucode_provider_nonzero_exit_escalates_with_diagnostics() {
   status="$?"
   set -e
 
-  [ "$status" -eq 0 ] || fail "Provider non-zero exit should be non-blocking ESCALATE"
+  [ "$status" -ne 0 ] || fail "Provider non-zero exit should fail closed"
   jq -e '
     .provider == "heiyucode_claude_code"
     and .transport == "messages-api"
     and .model == "claude-heiyu-test"
     and .status == "error"
     and .error_type == "provider_error"
-    and .passed == true
+    and .passed == false
     and .escalate == true
     and .exit_code == 17
     and .stdout_bytes == 0
@@ -352,7 +465,7 @@ test_heiyucode_provider_nonzero_exit_escalates_with_diagnostics() {
   ' "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "Non-zero provider diagnostics mismatch"
 }
 
-test_heiyucode_provider_empty_output_escalates_with_diagnostics() {
+test_heiyucode_provider_empty_output_fails_closed_with_diagnostics() {
   local tmp fake_bin calls status
   tmp="$(mktemp -d)"
   fake_bin="$tmp/bin"
@@ -377,14 +490,14 @@ test_heiyucode_provider_empty_output_escalates_with_diagnostics() {
   status="$?"
   set -e
 
-  [ "$status" -eq 0 ] || fail "Empty provider response should be non-blocking ESCALATE"
+  [ "$status" -ne 0 ] || fail "Empty provider response should fail closed"
   jq -e '
     .provider == "heiyucode_claude_code"
     and .transport == "messages-api"
     and .status == "error"
     and .error_type == "provider_error"
     and .reason == "No text in response"
-    and .passed == true
+    and .passed == false
     and .escalate == true
     and .exit_code == 0
     and .stdout_bytes == 0
@@ -394,7 +507,7 @@ test_heiyucode_provider_empty_output_escalates_with_diagnostics() {
   ' "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "Empty output diagnostics mismatch"
 }
 
-test_heiyucode_provider_http_error_escalates_with_response_tail() {
+test_heiyucode_provider_http_error_fails_closed_with_response_tail() {
   local tmp fake_bin calls status
   tmp="$(mktemp -d)"
   fake_bin="$tmp/bin"
@@ -418,14 +531,14 @@ test_heiyucode_provider_http_error_escalates_with_response_tail() {
   status="$?"
   set -e
 
-  [ "$status" -eq 0 ] || fail "HTTP provider error should be non-blocking ESCALATE"
+  [ "$status" -ne 0 ] || fail "HTTP provider error should fail closed"
   jq -e '
     .provider == "heiyucode_claude_code"
     and .transport == "messages-api"
     and .status == "error"
     and .error_type == "provider_error"
     and .reason == "HeiyuCode Messages API HTTP 500"
-    and .passed == true
+    and .passed == false
     and .escalate == true
     and .http_status == "500"
     and .attempts == 2
@@ -578,16 +691,69 @@ SH
     "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "Large prompt result metadata mismatch"
 }
 
+test_aggregate_includes_llm_review_failure() {
+  local tmp output code
+  tmp="$(mktemp -d)"
+  mkdir -p "$tmp/results"
+  cat > "$tmp/results/d1-changelog.json" <<'JSON'
+{"check_id":"D-1","check_name":"CHANGELOG","passed":true,"issues":[]}
+JSON
+  cat > "$tmp/results/llm-review.json" <<'JSON'
+{"review_id":"llm-review","check_name":"LLM Review","provider":"anthropic","status":"error","reason":"API error","passed":false,"escalate":true}
+JSON
+
+  set +e
+  output=$(RESULTS_DIR="$tmp/results" REQUIRED_RESULT_FILES="d1-changelog.json" "$ROOT_DIR/scripts/aggregate.sh" 2>&1)
+  code=$?
+  set -e
+
+  [ "$code" -ne 0 ] || fail "Aggregator must fail when llm-review.json failed"
+  jq -e '.verdict.total_checks == 2 and .verdict.failed == 1 and (.results[] | select(.review_id == "llm-review" and .passed == false))' \
+    "$tmp/results/aggregate.json" >/dev/null || fail "Aggregator must include failed llm-review result"
+}
+
+test_aggregate_fails_closed_when_required_result_is_missing() {
+  local tmp output code
+  tmp="$(mktemp -d)"
+  mkdir -p "$tmp/results"
+  cat > "$tmp/results/d1-changelog.json" <<'JSON'
+{"check_id":"D-1","check_name":"CHANGELOG","passed":true,"issues":[]}
+JSON
+
+  set +e
+  output=$(RESULTS_DIR="$tmp/results" REQUIRED_RESULT_FILES="d1-changelog.json d2-terminology.json" "$ROOT_DIR/scripts/aggregate.sh" 2>&1)
+  code=$?
+  set -e
+
+  [ "$code" -ne 0 ] || fail "Aggregator must fail when a required result file is missing"
+  jq -e '.verdict.failed == 1 and (.results[] | select(.check_id == "D-MISSING" and .passed == false and (.issues[] | contains("d2-terminology.json"))))' \
+    "$tmp/results/aggregate.json" >/dev/null || fail "Aggregator must materialize missing required result failure"
+}
+
+test_workflow_requires_llm_result_when_llm_enabled() {
+  local workflow
+  workflow="$(cat "$ROOT_DIR/.github/workflows/consistency-sentinel.yml")"
+  assert_contains "$workflow" "REQUIRED_RESULT_FILES="
+  assert_contains "$workflow" "llm-review.json"
+  assert_contains "$workflow" "inputs.skip_llm"
+}
+
 test_anthropic_provider_uses_messages_api
 test_request_body_uses_file_backed_payload_for_anthropic
 test_large_prompt_uses_file_backed_payload_without_arg_list_overflow
 test_heiyucode_provider_uses_messages_api
 test_heiyucode_provider_hard_fails_explicit_fail_verdict
-test_heiyucode_provider_timeout_escalates_without_waiting_for_job_timeout
-test_heiyucode_provider_nonzero_exit_escalates_with_diagnostics
-test_heiyucode_provider_empty_output_escalates_with_diagnostics
-test_heiyucode_provider_http_error_escalates_with_response_tail
+test_anthropic_api_error_fails_closed
+test_anthropic_empty_text_fails_closed
+test_heiyucode_provider_hard_fails_explicit_escalate_verdict
+test_heiyucode_provider_timeout_fails_closed_without_waiting_for_job_timeout
+test_heiyucode_provider_nonzero_exit_fails_closed_with_diagnostics
+test_heiyucode_provider_empty_output_fails_closed_with_diagnostics
+test_heiyucode_provider_http_error_fails_closed_with_response_tail
 test_heiyucode_provider_retries_retryable_524_once
 test_heiyucode_provider_retries_x_api_key_after_bearer_auth_failure
+test_aggregate_includes_llm_review_failure
+test_aggregate_fails_closed_when_required_result_is_missing
+test_workflow_requires_llm_result_when_llm_enabled
 
 echo "llm-review provider router tests passed"

@@ -13,8 +13,29 @@ mkdir -p "$RESULTS_DIR"
 echo "Verdict Aggregation"
 echo "Results directory: $RESULTS_DIR"
 
-# Find all d*-*.json files in results directory
-RESULT_FILES=$(find "$RESULTS_DIR" -maxdepth 1 -name "d*-*.json" -type f | sort)
+REQUIRED_RESULT_FILES="${REQUIRED_RESULT_FILES:-d1-changelog.json d2-terminology.json d3-cascade.json d4-directory.json d5-capability-source.json d6-brand-token.json}"
+if [ -n "$REQUIRED_RESULT_FILES" ]; then
+  for required_result in $REQUIRED_RESULT_FILES; do
+    [ -z "$required_result" ] && continue
+    if [ ! -f "$RESULTS_DIR/$required_result" ]; then
+      echo "::error::Required sentinel result missing: $required_result"
+      jq -n \
+        --arg file "$required_result" \
+        --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{
+          check_id: "D-MISSING",
+          check_name: "Missing Result",
+          passed: false,
+          status: "missing",
+          issues: ["Required sentinel result file missing: " + $file],
+          timestamp: $timestamp
+        }' > "$RESULTS_DIR/$required_result"
+    fi
+  done
+fi
+
+# Find deterministic check files plus optional LLM review result.
+RESULT_FILES=$(find "$RESULTS_DIR" -maxdepth 1 \( -name "d*-*.json" -o -name "llm-review.json" \) -type f | sort)
 
 if [ -z "$RESULT_FILES" ]; then
   echo "No result files found in $RESULTS_DIR"
@@ -45,8 +66,8 @@ while IFS= read -r result_file; do
   fi
 
   # Parse JSON result
-  check_id=$(jq -r '.check_id // "unknown"' "$result_file" 2>/dev/null || echo "unknown")
-  check_name=$(jq -r '.check_name // "unknown"' "$result_file" 2>/dev/null || echo "unknown")
+  check_id=$(jq -r '.check_id // .review_id // "unknown"' "$result_file" 2>/dev/null || echo "unknown")
+  check_name=$(jq -r '.check_name // (if (.review_id // "") == "llm-review" then "LLM Review" else "unknown" end)' "$result_file" 2>/dev/null || echo "unknown")
   passed=$(jq -r '.passed // false' "$result_file" 2>/dev/null || echo "false")
 
   echo "  Check: $check_id - $check_name"
@@ -60,7 +81,7 @@ while IFS= read -r result_file; do
     FAILED_CHECKS=$((FAILED_CHECKS + 1))
 
     # Extract issues
-    issues=$(jq -r '.issues[]? // .violations[]? // empty' "$result_file" 2>/dev/null || true)
+    issues=$(jq -r '([.issues[]?, .violations[]?] + (if (.reason // "") != "" then [.reason] else [] end))[]?' "$result_file" 2>/dev/null || true)
     while IFS= read -r issue; do
       [ -z "$issue" ] && continue
       ALL_ISSUES+=("[$check_id] $issue")
@@ -147,10 +168,10 @@ REPORT_FILE="$RESULTS_DIR/sentinel-report.md"
   while IFS= read -r result_file; do
     [ -z "$result_file" ] && continue
     [ ! -f "$result_file" ] && continue
-    r_id=$(jq -r '.check_id // "?"' "$result_file" 2>/dev/null || echo "?")
-    r_name=$(jq -r '.check_name // "?"' "$result_file" 2>/dev/null || echo "?")
+    r_id=$(jq -r '.check_id // .review_id // "?"' "$result_file" 2>/dev/null || echo "?")
+    r_name=$(jq -r '.check_name // (if (.review_id // "") == "llm-review" then "LLM Review" else "?" end)' "$result_file" 2>/dev/null || echo "?")
     r_pass=$(jq -r '.passed // false' "$result_file" 2>/dev/null || echo "false")
-    r_issues=$(jq -r '([.issues[]?, .violations[]?] | join("; ")) // ""' "$result_file" 2>/dev/null || echo "")
+    r_issues=$(jq -r '([.issues[]?, .violations[]?] + (if (.reason // "") != "" then [.reason] else [] end) | join("; ")) // ""' "$result_file" 2>/dev/null || echo "")
     if [ "$r_pass" = "true" ]; then
       echo "| ${r_id} ${r_name} | ✅ | — |"
     else

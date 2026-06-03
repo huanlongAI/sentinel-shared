@@ -98,6 +98,26 @@ write_skip_result() {
 EOF
 }
 
+write_error_result() {
+  local reason="$1"
+  jq -n \
+    --arg provider "$LLM_PROVIDER" \
+    --arg model "$LLM_MODEL" \
+    --arg reason "$reason" \
+    --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{
+      review_id: "llm-review",
+      check_name: "LLM Review",
+      provider: $provider,
+      model: $model,
+      status: "error",
+      reason: $reason,
+      passed: false,
+      escalate: true,
+      timestamp: $timestamp
+    }' > "$RESULTS_DIR/llm-review.json"
+}
+
 file_size_bytes() {
   local file="$1"
   if [ -f "$file" ]; then
@@ -185,7 +205,7 @@ write_provider_error_result() {
       status: $status,
       error_type: $error_type,
       reason: $reason,
-      passed: true,
+      passed: false,
       escalate: true,
       http_status: $http_status,
       auth_header_kind: $auth_header_kind,
@@ -201,7 +221,7 @@ write_provider_error_result() {
       timestamp: $timestamp
     }' > "$RESULTS_DIR/llm-review.json"
 
-  echo "::warning::${reason} — ESCALATE (provider=${LLM_PROVIDER} model=${LLM_MODEL} transport=${provider_transport} http_status=${provider_http_status} auth_header_kind=${provider_auth_header_kind} exit_code=${exit_code} attempts=${provider_attempts} duration_seconds=${duration_seconds} stdout_bytes=${stdout_bytes} stderr_bytes=${stderr_bytes} base_url_configured=${base_url_configured} api_url_configured=${api_url_configured})"
+  echo "::error::${reason} — fail closed (provider=${LLM_PROVIDER} model=${LLM_MODEL} transport=${provider_transport} http_status=${provider_http_status} auth_header_kind=${provider_auth_header_kind} exit_code=${exit_code} attempts=${provider_attempts} duration_seconds=${duration_seconds} stdout_bytes=${stdout_bytes} stderr_bytes=${stderr_bytes} base_url_configured=${base_url_configured} api_url_configured=${api_url_configured})"
 }
 
 run_with_timeout() {
@@ -288,15 +308,15 @@ fi
 echo "Config: provider=$LLM_PROVIDER model=$LLM_MODEL max_tokens=$LLM_MAX_TOKENS threshold=$CONFIDENCE_THRESHOLD"
 
 if [ "$LLM_PROVIDER" = "unsupported" ]; then
-  echo "::warning::Unsupported LLM provider '$REQUESTED_PROVIDER' — skipping LLM review"
-  write_skip_result "Unsupported LLM provider: ${REQUESTED_PROVIDER}"
-  exit 0
+  echo "::error::Unsupported LLM provider '$REQUESTED_PROVIDER' — fail closed"
+  write_error_result "Unsupported LLM provider: ${REQUESTED_PROVIDER}"
+  exit 1
 fi
 
 if [ "$LLM_PROVIDER" = "none" ]; then
-  echo "::warning::No LLM provider credentials configured — skipping LLM review"
-  write_skip_result "No LLM provider credentials configured"
-  exit 0
+  echo "::error::No LLM provider credentials configured — fail closed"
+  write_error_result "No LLM provider credentials configured"
+  exit 1
 fi
 
 if [ -z "$LLM_CHECKS" ]; then
@@ -449,9 +469,9 @@ PROVIDER_API_URL_CONFIGURED="${PROVIDER_API_URL_CONFIGURED:-false}"
 
 if [ "$LLM_PROVIDER" = "anthropic" ]; then
   if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-    echo "::warning::ANTHROPIC_API_KEY not set — skipping LLM review"
-    write_skip_result "ANTHROPIC_API_KEY not configured"
-    exit 0
+    echo "::error::ANTHROPIC_API_KEY not set — fail closed"
+    write_error_result "ANTHROPIC_API_KEY not configured"
+    exit 1
   fi
 
   API_RESPONSE=$(curl -s --max-time 120 \
@@ -462,20 +482,16 @@ if [ "$LLM_PROVIDER" = "anthropic" ]; then
     "https://api.anthropic.com/v1/messages" 2>&1) || true
 
   if [ -z "$API_RESPONSE" ]; then
-    echo "::warning::Claude API returned empty response — ESCALATE"
-    cat > "$RESULTS_DIR/llm-review.json" <<EOF
-{"review_id":"llm-review","provider":"$LLM_PROVIDER","model":"$LLM_MODEL","status":"error","reason":"Empty API response","passed":true,"escalate":true,"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
-EOF
-    exit 0
+    echo "::error::Claude API returned empty response — fail closed"
+    write_error_result "Empty API response"
+    exit 1
   fi
 
   API_ERROR=$(echo "$API_RESPONSE" | jq -r '.error.message // empty' 2>/dev/null || true)
   if [ -n "$API_ERROR" ]; then
-    echo "::warning::Claude API error: $API_ERROR — ESCALATE"
-    cat > "$RESULTS_DIR/llm-review.json" <<EOF
-{"review_id":"llm-review","provider":"$LLM_PROVIDER","model":"$LLM_MODEL","status":"error","reason":"API error: ${API_ERROR}","passed":true,"escalate":true,"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
-EOF
-    exit 0
+    echo "::error::Claude API error: $API_ERROR — fail closed"
+    write_error_result "API error: ${API_ERROR}"
+    exit 1
   fi
 
   RESPONSE_TEXT=$(echo "$API_RESPONSE" | jq -r '.content[0].text // empty' 2>/dev/null || true)
@@ -486,7 +502,7 @@ elif [ "$LLM_PROVIDER" = "heiyucode_claude_code" ]; then
 
   if [ -z "$HEIYUCODE_TOKEN" ]; then
     write_provider_error_result "HeiyuCode token not configured" 0 0 /dev/null /dev/null
-    exit 0
+    exit 1
   fi
 
   if ! [[ "$HEIYUCODE_CLIENT_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || [ "$HEIYUCODE_CLIENT_TIMEOUT_SECONDS" -lt 1 ]; then
@@ -587,11 +603,11 @@ elif [ "$LLM_PROVIDER" = "heiyucode_claude_code" ]; then
 
   if [ "$client_status" -eq 124 ]; then
     write_provider_error_result "HeiyuCode Messages API timeout after ${HEIYUCODE_CLIENT_TIMEOUT_SECONDS}s" 124 "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
-    exit 0
+    exit 1
   fi
   if [ "$client_status" -ne 0 ]; then
     write_provider_error_result "HeiyuCode Messages API curl error" "$client_status" "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
-    exit 0
+    exit 1
   fi
 
   if ! [[ "$HTTP_STATUS" =~ ^2[0-9][0-9]$ ]]; then
@@ -600,7 +616,7 @@ elif [ "$LLM_PROVIDER" = "heiyucode_claude_code" ]; then
     else
       write_provider_error_result "HeiyuCode Messages API HTTP ${HTTP_STATUS}" 0 "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
     fi
-    exit 0
+    exit 1
   fi
 
   set +e
@@ -609,21 +625,19 @@ elif [ "$LLM_PROVIDER" = "heiyucode_claude_code" ]; then
   set -e
   if [ "$parse_status" -ne 0 ]; then
     write_provider_error_result "HeiyuCode Messages API returned invalid JSON" "$parse_status" "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
-    exit 0
+    exit 1
   fi
 
   if [ -z "$RESPONSE_TEXT" ]; then
     write_provider_error_result "No text in response" 0 "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
-    exit 0
+    exit 1
   fi
 fi
 
 if [ -z "$RESPONSE_TEXT" ]; then
-  echo "::warning::No text in provider response — ESCALATE"
-  cat > "$RESULTS_DIR/llm-review.json" <<EOF
-{"review_id":"llm-review","provider":"$LLM_PROVIDER","model":"$LLM_MODEL","status":"error","reason":"No text in response","passed":true,"escalate":true,"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
-EOF
-  exit 0
+  echo "::error::No text in provider response — fail closed"
+  write_error_result "No text in response"
+  exit 1
 fi
 
 echo "Response received (${#RESPONSE_TEXT} chars)"
@@ -648,12 +662,13 @@ if echo "$REVIEW_JSON" | jq . >/dev/null 2>&1; then
   echo "Summary: $SUMMARY"
   echo "$REVIEW_JSON" | jq -r '.checks // {} | to_entries[] | "  \(.key): \(.value.verdict) (confidence: \(.value.confidence // "N/A"))"' 2>/dev/null || true
 
-  if [ "$VERDICT" = "FAIL" ]; then
+  if [ "$VERDICT" = "FAIL" ] || [ "$VERDICT" = "ESCALATE" ]; then
     PASSED=false
   fi
 else
-  echo "::warning::Could not parse LLM JSON — ESCALATE"
-  REVIEW_JSON="{}"
+  echo "::error::Could not parse LLM JSON — fail closed"
+  write_error_result "Could not parse LLM JSON"
+  exit 1
 fi
 
 # --- Write result ---
@@ -688,7 +703,7 @@ EOF
 echo "Result written to $RESULT_FILE"
 
 if [ "$PASSED" = false ]; then
-  echo "::warning::LLM review verdict: FAIL"
+  echo "::warning::LLM review verdict: $VERDICT"
   exit 1
 fi
 
