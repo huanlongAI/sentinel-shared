@@ -98,6 +98,10 @@ jobs:
         run: .sentinel-shared/scripts/precheck-brand-token.sh
         continue-on-error: true
 
+      - name: "D-10: Agent 治理投影漂移"
+        if: always() && hashFiles('.sentinel-shared/scripts/precheck-agent-governance.sh') != ''
+        run: .sentinel-shared/scripts/precheck-agent-governance.sh
+
       # ---- LLM 一致性审查层 ----
       - name: "LLM: 语义一致性审查"
         if: always() && inputs.skip_llm != 'true'
@@ -115,7 +119,7 @@ jobs:
         id: aggregate
         if: always()
         run: |
-          REQUIRED_RESULTS="d1-changelog.json d2-terminology.json d3-cascade.json d4-directory.json d5-capability-source.json d6-brand-token.json"
+          REQUIRED_RESULTS="d1-changelog.json d2-terminology.json d3-cascade.json d4-directory.json d5-capability-source.json d6-brand-token.json d10-agent-governance.json"
           if [ "${{ inputs.skip_llm }}" != "true" ]; then
             REQUIRED_RESULTS="$REQUIRED_RESULTS llm-review.json"
           fi

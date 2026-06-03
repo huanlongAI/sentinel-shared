@@ -112,6 +112,15 @@ dimensions:
         trigger: "Mission/架构/Gate 逻辑/破坏性变更"
         phase: 1
 
+      - id: GPC-007
+        name: "Agent 治理投影漂移"
+        severity: P1
+        method: deterministic
+        precheck_id: D-10
+        source: "AUM AIR-MODE-SPEC §4.1.2 / AGENTS.md"
+        trigger: "AGENTS.md / CLAUDE.md / agent runtime projection 变更"
+        phase: 1
+
   design_brand:
     id: DBC
     name: "设计与品牌一致性"
@@ -198,6 +207,10 @@ prechecks:
     script: precheck-brand-token.sh
     check_ids: [DBC-001]
     description: "Brand Token 硬编码检测"
+  D-10:
+    script: precheck-agent-governance.sh
+    check_ids: [GPC-007]
+    description: "Agent 治理投影漂移检查"
 
 # LLM configuration
 llm:

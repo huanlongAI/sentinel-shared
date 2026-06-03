@@ -3,19 +3,25 @@ name: Sentinel Shared Self Test
 on:
   pull_request:
     paths:
+      - "AGENTS.md"
+      - "CLAUDE.md"
       - ".github/workflows/**"
       - ".sentinel/checks/**"
       - "scripts/**"
       - "tests/**"
+      - "docs/**"
       - "prompts/**"
       - "matrix/**"
   push:
     branches: [main]
     paths:
+      - "AGENTS.md"
+      - "CLAUDE.md"
       - ".github/workflows/**"
       - ".sentinel/checks/**"
       - "scripts/**"
       - "tests/**"
+      - "docs/**"
       - "prompts/**"
       - "matrix/**"
 
@@ -38,6 +44,7 @@ jobs:
           bash tests/test-dashboard-workflow.sh
           bash tests/test-cascade-workflow.sh
           bash tests/test-llm-review-provider-router.sh
+          bash tests/test-agent-governance.sh
           bash tests/test-self-test-workflow.sh
 
       - name: Check shell syntax

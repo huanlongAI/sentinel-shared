@@ -2,6 +2,10 @@
 
 Consistency Sentinel 共享基础设施 — Reusable Workflows + Scripts + Matrix。
 
+## Deterministic Prechecks
+
+- `D-10 Agent Governance`：扫描 `AGENTS.md` / `CLAUDE.md` 入口投影，阻断旧 `NODE-A` Write-Owner、旧 `GHThemeManager.current` 口径、缺失 Codex 根入口、超出 32 KiB 的长 `AGENTS.md` 以及 `AGENTS.md` 重复长篇治理正文。
+
 ## LLM Provider Router
 
 `scripts/llm-review.sh` 支持以下 provider：
