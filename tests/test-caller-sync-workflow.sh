@@ -47,6 +47,8 @@ for expected in \
   'head=huanlongAI:sentinel-caller-sync' \
   'EXISTING_PR_NUMBER=' \
   'EXISTING_PR_AUTOSYNC=' \
+  'huanlongAI/sentinel-shared#17' \
+  'startswith("chore(sentinel):")' \
   'existing_pr_not_autosync' \
   'REFRESH_REF_RESULT=' \
   'Branch refresh failed' \

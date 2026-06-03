@@ -194,7 +194,11 @@ jobs:
                 EXISTING_PR=$(echo "$EXISTING_BODY" | jq 'length')
                 EXISTING_PR_NUMBER=$(echo "$EXISTING_BODY" | jq -r '.[0].number // empty')
                 EXISTING_PR_AUTOSYNC=$(echo "$EXISTING_BODY" \
-                  | jq -r '.[0] | select(((.title // "") == "chore(sentinel): sync caller workflow to latest template") or ((.body // "") | contains("sentinel-auto-sync"))) | .number // empty')
+                  | jq -r '.[0] | select(
+                    ((.title // "") == "chore(sentinel): sync caller workflow to latest template")
+                    or ((.body // "") | contains("sentinel-auto-sync"))
+                    or (((.title // "") | startswith("chore(sentinel):")) and ((.body // "") | contains("huanlongAI/sentinel-shared#17")))
+                  ) | .number // empty')
 
                 if [ "$EXISTING_PR" != "0" ] && [ -z "$EXISTING_PR_AUTOSYNC" ]; then
                   echo "Existing sentinel-caller-sync PR is not marked as auto-sync for ${REPO}"
