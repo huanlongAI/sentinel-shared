@@ -18,6 +18,17 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local haystack="$1"
+  local needle="$2"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    echo "Expected output not to contain: $needle"
+    echo "Actual output:"
+    echo "$haystack"
+    exit 1
+  fi
+}
+
 pass() {
   PASS_COUNT=$((PASS_COUNT + 1))
   echo "ok - $1"
@@ -115,8 +126,9 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 # D-7 pass.
 D7_PASS_DIR="$TMP_ROOT/d7-pass"
 make_guanghe_docs "$D7_PASS_DIR" "0.6.0-alpha" "0.6.0-alpha"
-(cd "$D7_PASS_DIR" && RESULTS_DIR="$TMP_ROOT/results-d7-pass" "$D7_SCRIPT") >/tmp/d7-pass.out
-assert_contains "$(cat /tmp/d7-pass.out)" "PASS: D-7 reverse SSOT consistent at 0.6.0-alpha"
+D7_PASS_OUTPUT=$(cd "$D7_PASS_DIR" && RESULTS_DIR="$TMP_ROOT/results-d7-pass" "$D7_SCRIPT" 2>&1)
+assert_contains "$D7_PASS_OUTPUT" "PASS: D-7 reverse SSOT consistent at 0.6.0-alpha"
+assert_not_contains "$D7_PASS_OUTPUT" "unbound variable"
 pass "D-7 accepts matching README and CLAUDE-CONTEXT versions"
 
 # D-7 drift blocks.
@@ -139,8 +151,9 @@ UPSTREAM_DIR="$TMP_ROOT/upstream"
 D8_CURRENT_DIR="$TMP_ROOT/d8-current"
 make_upstream "$UPSTREAM_DIR"
 make_downstream_semver "$D8_CURRENT_DIR" "0.6.0-alpha"
-D8_CURRENT_OUTPUT=$(UPSTREAM_DIR="$UPSTREAM_DIR" DOWNSTREAM_DIR="$D8_CURRENT_DIR" RESULTS_DIR="$TMP_ROOT/results-d8-current" "$D8_SCRIPT")
+D8_CURRENT_OUTPUT=$(UPSTREAM_DIR="$UPSTREAM_DIR" DOWNSTREAM_DIR="$D8_CURRENT_DIR" RESULTS_DIR="$TMP_ROOT/results-d8-current" "$D8_SCRIPT" 2>&1)
 assert_contains "$D8_CURRENT_OUTPUT" "PASS: D-8 downstream pin 0.6.0-alpha is within allowed drift"
+assert_not_contains "$D8_CURRENT_OUTPUT" "unbound variable"
 pass "D-8 accepts current semver pin"
 
 # D-8 old semver emits WARN but does not block.

@@ -64,12 +64,18 @@ if [ "${#issues[@]}" -gt 0 ]; then
   passed=false
 fi
 
+if [ "${#issues[@]}" -gt 0 ]; then
+  issues_json="$(json_string_array "${issues[@]}")"
+else
+  issues_json="$(json_string_array)"
+fi
+
 cat > "$result_file" <<EOF
 {
   "check_id": "D-7",
   "check_name": "Reverse SSOT",
   "passed": $passed,
-  "issues": $(json_string_array "${issues[@]}"),
+  "issues": $issues_json,
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF
