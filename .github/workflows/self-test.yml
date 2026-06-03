@@ -44,6 +44,7 @@ jobs:
           bash tests/test-dashboard-workflow.sh
           bash tests/test-cascade-workflow.sh
           bash tests/test-llm-review-provider-router.sh
+          bash tests/test-owner-reviewed-override.sh
           bash tests/test-agent-governance.sh
           bash tests/test-self-test-workflow.sh
 
