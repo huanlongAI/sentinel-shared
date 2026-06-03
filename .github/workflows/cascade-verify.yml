@@ -100,7 +100,8 @@ jobs:
           echo "failed=${FAILED}" >> "$GITHUB_OUTPUT"
 
           if [ -n "$FAILED" ]; then
-            echo "::warning::Some dispatches failed: ${FAILED}"
+            echo "::error::Some dispatches failed: ${FAILED}"
+            exit 1
           fi
 
   collect-results:
@@ -123,6 +124,7 @@ jobs:
           FAIL=0
           SKIP=0
           REPORT=""
+          DISPATCH_FAILED="${{ needs.fan-out.outputs.failed }}"
           TRIGGER_TIME="${{ needs.fan-out.outputs.triggered && 'set' || 'unset' }}"
 
           for REPO in $DOWNSTREAM_REPOS; do
@@ -161,6 +163,7 @@ jobs:
           echo "pass=${PASS}" >> "$GITHUB_OUTPUT"
           echo "fail=${FAIL}" >> "$GITHUB_OUTPUT"
           echo "skip=${SKIP}" >> "$GITHUB_OUTPUT"
+          echo "dispatch_failed=${DISPATCH_FAILED}" >> "$GITHUB_OUTPUT"
 
           # Write report to file for the issue body
           printf "| Repo | Status | Details |\n|------|--------|--------|\n${REPORT}" > /tmp/cascade-report.md
@@ -169,12 +172,18 @@ jobs:
           echo "## Cascade Verification Summary" > /tmp/cascade-summary.md
           echo "" >> /tmp/cascade-summary.md
           echo "**Trigger**: ${{ github.sha }} (${{ github.event_name }})" >> /tmp/cascade-summary.md
+          echo "**Dispatch failures**: ${DISPATCH_FAILED:-none}" >> /tmp/cascade-summary.md
           echo "**Results**: ${PASS}/${TOTAL} pass, ${FAIL} fail, ${SKIP} skip/pending" >> /tmp/cascade-summary.md
           echo "" >> /tmp/cascade-summary.md
           cat /tmp/cascade-report.md >> /tmp/cascade-summary.md
 
+          if [ -n "$DISPATCH_FAILED" ] || [ "$FAIL" -gt 0 ] || [ "$SKIP" -gt 0 ]; then
+            echo "::error::Cascade verification incomplete or failed: dispatch_failed=${DISPATCH_FAILED:-none}, fail=${FAIL}, skip=${SKIP}"
+            exit 1
+          fi
+
       - name: Create issue if failures detected
-        if: steps.results.outputs.fail != '0'
+        if: always() && (steps.results.outputs.fail != '0' || steps.results.outputs.skip != '0' || needs.fan-out.outputs.failed != '')
         env:
           GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
         run: |
@@ -184,11 +193,12 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/huanlongAI/sentinel-shared/issues" \
             -d "$(jq -n \
-              --arg title "🚨 Cascade Verification: ${{ steps.results.outputs.fail }} repo(s) failed" \
+              --arg title "🚨 Cascade Verification: ${{ steps.results.outputs.fail }} failed / ${{ steps.results.outputs.skip }} incomplete" \
               --arg body "$BODY" \
               '{title: $title, body: $body, labels: ["cascade-failure"]}')"
 
       - name: Output summary
+        if: always()
         run: |
           echo "## Cascade Verification Results" >> $GITHUB_STEP_SUMMARY
           cat /tmp/cascade-summary.md >> $GITHUB_STEP_SUMMARY
