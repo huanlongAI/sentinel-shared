@@ -132,6 +132,7 @@ jobs:
           CANONICAL_BODY="${CANONICAL_BODY//__EXPR_SKIP_LLM__/$(gha_expr "github.event_name == 'repository_dispatch' || fromJSON(github.event.inputs.skip_llm || 'false')")}"
           CANONICAL_BODY="${CANONICAL_BODY//__EXPR_HEIYUCODE_BASE_URL__/$(gha_expr "vars.HEIYUCODE_BASE_URL || 'https://www.heiyucode.com'")}"
           CANONICAL_BODY="${CANONICAL_BODY//__EXPR_HEIYUCODE_MODEL__/$(gha_expr "vars.HEIYUCODE_MODEL || ''")}"
+          CALLER_SYNC_TOKEN_REMEDIATION="CASCADE_TOKEN must have repo read/write access to every selected downstream repo and workflow write permission, because caller-sync updates .github/workflows/consistency-sentinel.yml."
 
           # Normalize canonical: strip comments, leading/trailing whitespace,
           # collapse whitespace for comparison
@@ -283,7 +284,8 @@ jobs:
 
                 # Update file on branch
                 ENCODED=$(echo "$CANONICAL_BODY" | base64 -w0)
-                UPDATE_RESULT=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+                UPDATE_RESPONSE="/tmp/update-response-${REPO}.json"
+                UPDATE_RESULT=$(curl -s -o "$UPDATE_RESPONSE" -w "%{http_code}" -X PUT \
                   -H "Authorization: token ${GH_TOKEN}" \
                   -H "Accept: application/vnd.github+json" \
                   "https://api.github.com/repos/huanlongAI/${REPO}/contents/.github/workflows/consistency-sentinel.yml" \
@@ -321,8 +323,20 @@ jobs:
                     echo "PR created: $PR_URL"
                   fi
                 else
-                  echo "File update failed (HTTP $UPDATE_RESULT) for ${REPO}"
-                  FAILED="${FAILED}${REPO}:update_http_${UPDATE_RESULT},"
+                  UPDATE_MESSAGE=$(jq -r '.message // empty' "$UPDATE_RESPONSE" 2>/dev/null || true)
+                  if [ "$UPDATE_RESULT" = "403" ] || [ "$UPDATE_RESULT" = "404" ]; then
+                    echo "::error title=Caller sync token lacks workflow write access::File update failed (HTTP $UPDATE_RESULT) for ${REPO}. ${CALLER_SYNC_TOKEN_REMEDIATION}"
+                    if [ -n "$UPDATE_MESSAGE" ]; then
+                      echo "GitHub API message: ${UPDATE_MESSAGE}"
+                    fi
+                    FAILED="${FAILED}${REPO}:update_http_${UPDATE_RESULT}_token_scope,"
+                  else
+                    echo "File update failed (HTTP $UPDATE_RESULT) for ${REPO}"
+                    if [ -n "$UPDATE_MESSAGE" ]; then
+                      echo "GitHub API message: ${UPDATE_MESSAGE}"
+                    fi
+                    FAILED="${FAILED}${REPO}:update_http_${UPDATE_RESULT},"
+                  fi
                 fi
               fi
             fi

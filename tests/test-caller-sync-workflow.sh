@@ -69,4 +69,15 @@ do
     || fail "caller-sync workflow missing failure-handling marker: $expected"
 done
 
+for expected in \
+  'CALLER_SYNC_TOKEN_REMEDIATION=' \
+  'workflow write permission' \
+  'Caller sync token lacks workflow write access' \
+  'GitHub API message:' \
+  'token_scope'
+do
+  grep -Fq "$expected" "$CALLER_SYNC_WORKFLOW" \
+    || fail "caller-sync workflow missing token diagnostic marker: $expected"
+done
+
 echo "caller-sync dry_run input handling test passed"
