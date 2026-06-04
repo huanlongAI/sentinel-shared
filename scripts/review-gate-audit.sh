@@ -14,6 +14,7 @@ LIMIT="${REVIEW_GATE_AUDIT_LIMIT:-30}"
 OUTPUT="${REVIEW_GATE_AUDIT_OUTPUT:-.sentinel/results/review-gate-audit.json}"
 FIXTURE="${REVIEW_GATE_AUDIT_FIXTURE:-}"
 OVERRIDE_ACTORS="${REVIEW_GATE_AUDIT_OVERRIDE_ACTORS:-}"
+EFFECTIVE_AFTER="${REVIEW_GATE_AUDIT_EFFECTIVE_AFTER:-}"
 
 mkdir -p "$(dirname "$OUTPUT")"
 
@@ -32,13 +33,16 @@ write_collection_error() {
     --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg organization "$ORG" \
     --arg reason "$reason" \
+    --arg effective_after "$EFFECTIVE_AFTER" \
     '{
       audit_id: $audit_id,
       generated_at: $generated_at,
       organization: $organization,
+      effective_after: (if $effective_after == "" then null else $effective_after end),
       passed: false,
       checked: 0,
       violations: [],
+      accounted_legacy_violations: [],
       accounted_overrides: [],
       collection_errors: [{reason: $reason}]
     }' > "$OUTPUT"
@@ -134,6 +138,7 @@ result_json="$(
     --arg audit_id "review-gate-audit" \
     --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg organization "$ORG" \
+    --arg effective_after "$EFFECTIVE_AFTER" \
     --argjson actors "$actors_json" \
     '
       def login_of($comment):
@@ -159,20 +164,27 @@ result_json="$(
           | select(.body | test("reason:[[:space:]]*.+"; "i"))
         ][0] // null);
 
+      def merged_at($pr):
+        ($pr.mergedAt // $pr.merged_at // "");
+
+      def is_pre_effective($pr):
+        ($effective_after != "" and (merged_at($pr) < $effective_after));
+
       [
         (.repositories // [])[]
         | (.name // .repo // "") as $repo
         | (.pull_requests // [])[]
-        | select((.mergedAt // .merged_at // "") != "")
+        | select(merged_at(.) != "")
         | select((.reviewDecision // .review_decision // "") == "REVIEW_REQUIRED")
         | select(approved_review_count(.) == 0)
         | override_comment(.) as $override
         | select($override == null)
+        | select(is_pre_effective(.) | not)
         | {
             repo: $repo,
             number: .number,
             url: .url,
-            mergedAt: (.mergedAt // .merged_at // ""),
+            mergedAt: merged_at(.),
             reviewDecision: (.reviewDecision // .review_decision // ""),
             approved_reviews: approved_review_count(.),
             reason: "merged_review_required_without_approval_or_override"
@@ -182,7 +194,28 @@ result_json="$(
         (.repositories // [])[]
         | (.name // .repo // "") as $repo
         | (.pull_requests // [])[]
-        | select((.mergedAt // .merged_at // "") != "")
+        | select(merged_at(.) != "")
+        | select((.reviewDecision // .review_decision // "") == "REVIEW_REQUIRED")
+        | select(approved_review_count(.) == 0)
+        | override_comment(.) as $override
+        | select($override == null)
+        | select(is_pre_effective(.))
+        | {
+            repo: $repo,
+            number: .number,
+            url: .url,
+            mergedAt: merged_at(.),
+            reviewDecision: (.reviewDecision // .review_decision // ""),
+            approved_reviews: approved_review_count(.),
+            source: "pre_effective_review_gate_audit_baseline",
+            effective_after: $effective_after
+          }
+      ] as $accounted_legacy_violations
+      | [
+        (.repositories // [])[]
+        | (.name // .repo // "") as $repo
+        | (.pull_requests // [])[]
+        | select(merged_at(.) != "")
         | select((.reviewDecision // .review_decision // "") == "REVIEW_REQUIRED")
         | select(approved_review_count(.) == 0)
         | override_comment(.) as $override
@@ -199,7 +232,7 @@ result_json="$(
       | [
         (.repositories // [])[]
         | (.pull_requests // [])[]
-        | select((.mergedAt // .merged_at // "") != "")
+        | select(merged_at(.) != "")
       ] as $checked_prs
       | [
         (.repositories // [])[]
@@ -210,10 +243,12 @@ result_json="$(
           audit_id: $audit_id,
           generated_at: $generated_at,
           organization: $organization,
+          effective_after: (if $effective_after == "" then null else $effective_after end),
           repositories: [(.repositories // [])[] | (.name // .repo // "")],
           passed: (($violations | length) == 0 and ($collection_errors | length) == 0),
           checked: ($checked_prs | length),
           violations: $violations,
+          accounted_legacy_violations: $accounted_legacy_violations,
           accounted_overrides: $accounted_overrides,
           collection_errors: $collection_errors
         }
@@ -226,7 +261,7 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
     echo "## Review Gate Audit"
     echo ""
-    jq -r '"Checked: \(.checked) | Violations: \(.violations | length) | Accounted overrides: \(.accounted_overrides | length)"' "$OUTPUT"
+    jq -r '"Checked: \(.checked) | Violations: \(.violations | length) | Legacy accounted: \(.accounted_legacy_violations | length) | Accounted overrides: \(.accounted_overrides | length)"' "$OUTPUT"
     echo ""
     if jq -e '(.violations | length) > 0' "$OUTPUT" >/dev/null; then
       echo "| Repo | PR | Reason |"
