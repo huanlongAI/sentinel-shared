@@ -27,6 +27,7 @@ instruction_files() {
   find . \
     \( -path './.git' -o -path './.git/*' \
        -o -path './.build' -o -path './.build/*' \
+       -o -path './.claude/worktrees' -o -path './.claude/worktrees/*' \
        -o -path './.sentinel/results' -o -path './.sentinel/results/*' \
        -o -path './.sentinel-shared' -o -path './.sentinel-shared/*' \) -prune \
     -o \( -name 'AGENTS.md' -o -name 'CLAUDE.md' \) -type f -print \
