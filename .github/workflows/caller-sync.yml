@@ -129,7 +129,7 @@ jobs:
           CANONICAL_BODY="${CANONICAL_BODY//__EXPR_ANTHROPIC_API_KEY__/$(gha_expr 'secrets.ANTHROPIC_API_KEY')}"
           CANONICAL_BODY="${CANONICAL_BODY//__EXPR_HEIYUCODE_AUTH_TOKEN__/$(gha_expr 'secrets.HEIYUCODE_AUTH_TOKEN')}"
           CANONICAL_BODY="${CANONICAL_BODY//__EXPR_HEIYUCODE_API_KEY__/$(gha_expr 'secrets.HEIYUCODE_API_KEY')}"
-          CANONICAL_BODY="${CANONICAL_BODY//__EXPR_SKIP_LLM__/$(gha_expr "fromJSON(github.event.inputs.skip_llm || 'false')")}"
+          CANONICAL_BODY="${CANONICAL_BODY//__EXPR_SKIP_LLM__/$(gha_expr "github.event_name == 'repository_dispatch' || fromJSON(github.event.inputs.skip_llm || 'false')")}"
           CANONICAL_BODY="${CANONICAL_BODY//__EXPR_HEIYUCODE_BASE_URL__/$(gha_expr "vars.HEIYUCODE_BASE_URL || 'https://www.heiyucode.com'")}"
           CANONICAL_BODY="${CANONICAL_BODY//__EXPR_HEIYUCODE_MODEL__/$(gha_expr "vars.HEIYUCODE_MODEL || ''")}"
 
