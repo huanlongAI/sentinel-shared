@@ -49,6 +49,8 @@ assert_contains "$MAP_DOC_CONTENT" "REPO-MAP.md@v1.4.12"
 assert_contains "$MAP_DOC_CONTENT" "不在本文件维护 26 仓逐仓清单"
 assert_contains "$MAP_DOC_CONTENT" "40-PPR/check-deps.sh"
 assert_contains "$MAP_DOC_CONTENT" "hl-app-certificates"
+assert_contains "$MAP_DOC_CONTENT" ".build/checkouts"
+assert_contains "$MAP_DOC_CONTENT" ".claude/worktrees"
 pass "keeps AGENTS governance map anchored to REPO-MAP SSOT"
 
 # Missing Codex entrypoint is blocked when CLAUDE.md exists.
