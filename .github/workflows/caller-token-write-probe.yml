@@ -27,7 +27,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
           TARGET_REPO: ${{ inputs.target_repo }}
-          TARGET_REPOS_FILE: matrix/caller-target-repos.txt
+          REPO_MAP_REPO: huanlongAI/tzhOS
+          REPO_MAP_PATH: 40-PPR/REPO-MAP.md
+          REPO_MAP_REF: main
+          TARGET_RESOLVER: scripts/caller-targets.sh
           CLEANUP: ${{ github.event.inputs.cleanup || 'true' }}
           RUN_ID: ${{ github.run_id }}
           PROBE_BRANCH_PREFIX: sentinel-token-write-probe
@@ -56,19 +59,47 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           }
 
-          load_probe_targets() {
-            if [ ! -f "$TARGET_REPOS_FILE" ]; then
-              echo "::error::Caller target repo config missing: ${TARGET_REPOS_FILE}" >&2
+          load_repo_map() {
+            local repo_map_file="/tmp/repo-map.md"
+            local http_code
+
+            if [ -z "${GH_TOKEN}" ]; then
+              FAILURE_REASON="missing_cascade_token"
+              echo "::error::CASCADE_TOKEN is not configured" >&2
               return 1
             fi
 
-            { grep -E '^[A-Za-z0-9._-]+$' "$TARGET_REPOS_FILE" || true; } | tr '\n' ' '
+            http_code="$(curl -s -L -o "$repo_map_file" -w "%{http_code}" \
+              -H "Authorization: token ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github.raw+json" \
+              "https://api.github.com/repos/${REPO_MAP_REPO}/contents/${REPO_MAP_PATH}?ref=${REPO_MAP_REF}")"
+
+            if [ "$http_code" != "200" ]; then
+              FAILURE_REASON="repo_map_http_${http_code}"
+              echo "::error::Cannot load REPO-MAP from ${REPO_MAP_REPO}/${REPO_MAP_PATH}@${REPO_MAP_REF} (HTTP ${http_code})" >&2
+              return 1
+            fi
+
+            echo "$repo_map_file"
+          }
+
+          load_probe_targets() {
+            local repo_map_file
+
+            if [ ! -x "$TARGET_RESOLVER" ]; then
+              FAILURE_REASON="missing_target_resolver"
+              echo "::error::Caller target resolver missing or not executable: ${TARGET_RESOLVER}" >&2
+              return 1
+            fi
+
+            repo_map_file="$(load_repo_map)" || return 1
+            bash "$TARGET_RESOLVER" from-file "$repo_map_file" | tr '\n' ' '
           }
 
           PROBE_TARGETS="$(load_probe_targets)"
           if [ -z "$PROBE_TARGETS" ]; then
             FAILURE_REASON="empty_target_config"
-            echo "::error::Caller target repo config contains no targets: ${TARGET_REPOS_FILE}"
+            echo "::error::REPO-MAP target resolver returned no caller targets"
             exit 1
           fi
 
@@ -102,12 +133,6 @@ jobs:
               exit 1
               ;;
           esac
-
-          if [ -z "${GH_TOKEN}" ]; then
-            FAILURE_REASON="missing_cascade_token"
-            echo "::error::CASCADE_TOKEN is not configured"
-            exit 1
-          fi
 
           MAIN_REF_RESPONSE="/tmp/probe-main-ref.json"
           MAIN_REF_HTTP="$(curl -s -o "$MAIN_REF_RESPONSE" -w "%{http_code}" \
