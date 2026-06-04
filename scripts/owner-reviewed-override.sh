@@ -11,6 +11,7 @@ REQUIRED_DETERMINISTIC_RESULT_FILES="${REQUIRED_DETERMINISTIC_RESULT_FILES:-}"
 OWNER_REVIEWED_COMMENTS_FILE="${OWNER_REVIEWED_COMMENTS_FILE:-}"
 PR_NUMBER="${PR_NUMBER:-}"
 HEAD_SHA="${HEAD_SHA:-}"
+HEAD_COMMIT_EPOCH="${HEAD_COMMIT_EPOCH:-}"
 GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -85,6 +86,11 @@ else
 fi
 
 actors_json=$(printf '%s\n' "$actors" | jq -R . | jq -s .)
+
+if [ -z "$HEAD_COMMIT_EPOCH" ]; then
+  HEAD_COMMIT_EPOCH=$(git show -s --format=%ct "$HEAD_SHA" 2>/dev/null || true)
+fi
+
 match=$(
   jq -r \
     --arg head "$HEAD_SHA" \
@@ -103,17 +109,47 @@ match=$(
       | select(.body | test("deterministic[ _-]*checks:[[:space:]]*PASS"; "i"))
       | select(.body | test("llm[-_ ]?review:[[:space:]]*ESCALATE"; "i"))
       | select(.body | test("follow[-_ ]?up:[[:space:]]*https://"; "i"))
-      | [.login, .association, .url]
+      | [.login, .association, .url, "structured_head_sha"]
       | @tsv
     ' <<< "$comments_json" 2>/dev/null | head -n 1
 )
+
+if [ -z "$match" ] && [ -n "$HEAD_COMMIT_EPOCH" ]; then
+  match=$(
+    jq -r \
+      --argjson actors "$actors_json" \
+      --argjson head_epoch "$HEAD_COMMIT_EPOCH" \
+      '
+        .[]
+        | {
+            body: (.body // ""),
+            login: (.user.login // .author.login // ""),
+            association: (.author_association // .authorAssociation // ""),
+            created_at: (.created_at // .createdAt // ""),
+            url: (.html_url // .url // "")
+          }
+        | select(.login as $login | $actors | index($login))
+        | select(((.created_at | fromdateiso8601? // 0) >= $head_epoch))
+        | select(.body | test("Founder[[:space:]]*裁决"; "i"))
+        | select(.body | test("owner-reviewed governance evidence|governance owner verification|负责人已审治理证据|治理负责人确认"; "i"))
+        | select(.body | test("deterministic[ _-]*checks|D-1"; "i"))
+        | select(.body | test("PASS"; "i"))
+        | select(.body | test("llm[-_ ]?review"; "i"))
+        | select(.body | test("ESCALATE"; "i"))
+        | select(.body | test("runtime_authorization[[:space:]]*=[[:space:]]*false"; "i"))
+        | select(.body | test("engineering_start[[:space:]]*=[[:space:]]*forbidden"; "i"))
+        | [.login, .association, .url, "founder_governance_ruling"]
+        | @tsv
+      ' <<< "$comments_json" 2>/dev/null | head -n 1
+  )
+fi
 
 if [ -z "$match" ]; then
   echo "No valid owner-reviewed override comment found"
   exit 0
 fi
 
-IFS=$'\t' read -r actor author_association comment_url <<< "$match"
+IFS=$'\t' read -r actor author_association comment_url override_source <<< "$match"
 
 jq -n \
   --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -121,11 +157,13 @@ jq -n \
   --arg actor "$actor" \
   --arg author_association "$author_association" \
   --arg comment_url "$comment_url" \
+  --arg override_source "$override_source" \
   '{
     review_id: "owner-reviewed-override",
     check_name: "Owner Reviewed Override",
     status: "accepted",
     passed: true,
+    override_source: $override_source,
     overrides_review_id: "llm-review",
     overrides_verdict: "ESCALATE",
     scope: "llm-review",
