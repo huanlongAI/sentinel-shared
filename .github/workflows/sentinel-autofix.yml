@@ -15,6 +15,15 @@ on:
         required: false
         default: 'true'
         type: string
+      llm_provider:
+        description: 'LLM provider: auto prefers HeiyuCode and falls back to Anthropic'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - heiyucode
+          - anthropic
 
 permissions:
   contents: read
@@ -88,7 +97,16 @@ jobs:
         id: fix
         working-directory: target-repo
         env:
+          SENTINEL_LLM_PROVIDER: ${{ inputs.llm_provider || 'auto' }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          HEIYUCODE_AUTH_TOKEN: ${{ secrets.HEIYUCODE_AUTH_TOKEN }}
+          HEIYUCODE_API_KEY: ${{ secrets.HEIYUCODE_API_KEY }}
+          HEIYUCODE_BASE_URL: ${{ vars.HEIYUCODE_BASE_URL }}
+          HEIYUCODE_API_URL: ${{ vars.HEIYUCODE_API_URL }}
+          HEIYUCODE_MODEL: ${{ vars.HEIYUCODE_MODEL }}
+          HEIYUCODE_CLIENT_TIMEOUT_SECONDS: ${{ vars.HEIYUCODE_CLIENT_TIMEOUT_SECONDS || '120' }}
+          LLM_MODEL: ${{ vars.SENTINEL_LLM_MODEL || 'claude-sonnet-4-6' }}
+          LLM_MAX_TOKENS: '4096'
         run: |
           RESULT_FILE="${{ steps.precheck.outputs.result_file }}"
           bash ../sentinel-shared/scripts/auto-fix.sh \
