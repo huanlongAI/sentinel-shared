@@ -1,0 +1,172 @@
+name: Caller Token Write Probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: Huanlong downstream repo to probe
+        required: true
+        type: choice
+        options:
+          - hl-platform
+          - hl-framework
+          - hl-factory
+          - hl-dispatch
+          - hl-contracts
+          - hl-console-native
+          - team-memory
+      cleanup:
+        description: Delete the temporary probe branch after the run
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-file-write-probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe CASCADE_TOKEN workflow-file write permission
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+          CLEANUP: ${{ github.event.inputs.cleanup || 'true' }}
+          RUN_ID: ${{ github.run_id }}
+          HUANLONG_PROBE_REPOS: "hl-platform hl-framework hl-factory hl-dispatch hl-contracts hl-console-native team-memory"
+          PROBE_BRANCH_PREFIX: sentinel-token-write-probe
+          TOKEN_REMEDIATION: "CASCADE_TOKEN must have repo read/write access and workflow write permission for the selected downstream repo."
+        run: |
+          set -euo pipefail
+
+          PROBE_BRANCH="${PROBE_BRANCH_PREFIX}-${RUN_ID}"
+          PROBE_PATH=".github/workflows/sentinel-token-write-probe-${RUN_ID}.yml"
+          BRANCH_CREATED="false"
+          RESULT="failed"
+          FAILURE_REASON=""
+
+          write_summary() {
+            {
+              echo "## Caller Token Write Probe"
+              echo ""
+              echo "Target: ${TARGET_REPO}"
+              echo "Branch: ${PROBE_BRANCH}"
+              echo "Probe path: ${PROBE_PATH}"
+              echo "Cleanup: ${CLEANUP}"
+              echo "Result: ${RESULT}"
+              if [ -n "$FAILURE_REASON" ]; then
+                echo "Failure reason: ${FAILURE_REASON}"
+              fi
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          cleanup_branch() {
+            if [ "$BRANCH_CREATED" != "true" ]; then
+              write_summary
+              return
+            fi
+
+            if [ "${CLEANUP}" != "true" ]; then
+              echo "Cleanup disabled; probe branch retained: ${PROBE_BRANCH}"
+              write_summary
+              return
+            fi
+
+            DELETE_RESULT="$(curl -s -o /tmp/probe-delete-ref.json -w "%{http_code}" -X DELETE \
+              -H "Authorization: token ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/huanlongAI/${TARGET_REPO}/git/refs/heads/${PROBE_BRANCH}" || true)"
+            echo "Probe branch cleanup HTTP ${DELETE_RESULT}"
+            write_summary
+          }
+          trap cleanup_branch EXIT
+
+          case " ${HUANLONG_PROBE_REPOS} " in
+            *" ${TARGET_REPO} "*)
+              ;;
+            *)
+              FAILURE_REASON="invalid_target:${TARGET_REPO}"
+              echo "::error::Invalid probe target: ${TARGET_REPO}"
+              exit 1
+              ;;
+          esac
+
+          if [ -z "${GH_TOKEN}" ]; then
+            FAILURE_REASON="missing_cascade_token"
+            echo "::error::CASCADE_TOKEN is not configured"
+            exit 1
+          fi
+
+          MAIN_REF_RESPONSE="/tmp/probe-main-ref.json"
+          MAIN_REF_HTTP="$(curl -s -o "$MAIN_REF_RESPONSE" -w "%{http_code}" \
+            -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/huanlongAI/${TARGET_REPO}/git/refs/heads/main")"
+          if [ "$MAIN_REF_HTTP" != "200" ]; then
+            FAILURE_REASON="${TARGET_REPO}:main_ref_http_${MAIN_REF_HTTP}"
+            echo "::error::Cannot read main ref for ${TARGET_REPO} (HTTP ${MAIN_REF_HTTP})"
+            exit 1
+          fi
+
+          MAIN_SHA="$(jq -r '.object.sha // empty' "$MAIN_REF_RESPONSE")"
+          if [ -z "$MAIN_SHA" ]; then
+            FAILURE_REASON="${TARGET_REPO}:missing_main_sha"
+            echo "::error::Cannot resolve main SHA for ${TARGET_REPO}"
+            exit 1
+          fi
+
+          CREATE_REF_RESPONSE="/tmp/probe-create-ref.json"
+          CREATE_REF_RESULT="$(curl -s -o "$CREATE_REF_RESPONSE" -w "%{http_code}" -X POST \
+            -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/huanlongAI/${TARGET_REPO}/git/refs" \
+            -d "$(jq -n --arg ref "refs/heads/${PROBE_BRANCH}" --arg sha "$MAIN_SHA" \
+              '{ref: $ref, sha: $sha}')")"
+          if [ "$CREATE_REF_RESULT" != "201" ]; then
+            FAILURE_REASON="${TARGET_REPO}:create_ref_http_${CREATE_REF_RESULT}"
+            echo "::error::Probe branch create failed for ${TARGET_REPO} (HTTP ${CREATE_REF_RESULT})"
+            exit 1
+          fi
+          BRANCH_CREATED="true"
+
+          PROBE_BODY="$(cat <<'PROBE_YAML'
+          name: Sentinel Token Write Probe
+          on:
+            workflow_dispatch:
+          jobs:
+            noop:
+              runs-on: ubuntu-latest
+              steps:
+                - run: echo "CASCADE_TOKEN workflow-file write probe"
+          PROBE_YAML
+          )"
+          ENCODED="$(printf '%s' "$PROBE_BODY" | base64 -w0)"
+          UPDATE_RESPONSE="/tmp/probe-update-response.json"
+          UPDATE_RESULT="$(curl -s -o "$UPDATE_RESPONSE" -w "%{http_code}" -X PUT \
+            -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/huanlongAI/${TARGET_REPO}/contents/${PROBE_PATH}" \
+            -d "$(jq -n \
+              --arg msg "chore(sentinel): probe cascade token workflow write permission" \
+              --arg content "$ENCODED" \
+              --arg branch "$PROBE_BRANCH" \
+              '{message: $msg, content: $content, branch: $branch}')")"
+
+          if [ "$UPDATE_RESULT" = "200" ] || [ "$UPDATE_RESULT" = "201" ]; then
+            RESULT="success"
+            echo "Probe write succeeded for ${TARGET_REPO}: ${PROBE_PATH}"
+          else
+            UPDATE_MESSAGE="$(jq -r '.message // empty' "$UPDATE_RESPONSE" 2>/dev/null || true)"
+            if [ "$UPDATE_RESULT" = "403" ] || [ "$UPDATE_RESULT" = "404" ]; then
+              FAILURE_REASON="${TARGET_REPO}:write_http_${UPDATE_RESULT}_token_scope"
+              echo "::error title=CASCADE_TOKEN lacks workflow-file write access::Workflow file probe failed (HTTP ${UPDATE_RESULT}) for ${TARGET_REPO}. ${TOKEN_REMEDIATION}"
+            else
+              FAILURE_REASON="${TARGET_REPO}:write_http_${UPDATE_RESULT}"
+              echo "::error::Workflow file probe failed (HTTP ${UPDATE_RESULT}) for ${TARGET_REPO}"
+            fi
+            if [ -n "$UPDATE_MESSAGE" ]; then
+              echo "GitHub API message: ${UPDATE_MESSAGE}"
+            fi
+            exit 1
+          fi
