@@ -14,8 +14,41 @@ LIMIT="${REVIEW_GATE_AUDIT_LIMIT:-30}"
 OUTPUT="${REVIEW_GATE_AUDIT_OUTPUT:-.sentinel/results/review-gate-audit.json}"
 FIXTURE="${REVIEW_GATE_AUDIT_FIXTURE:-}"
 OVERRIDE_ACTORS="${REVIEW_GATE_AUDIT_OVERRIDE_ACTORS:-}"
+LOOKBACK_DAYS="${REVIEW_GATE_AUDIT_LOOKBACK_DAYS:-}"
+MERGED_SINCE="${REVIEW_GATE_AUDIT_MERGED_SINCE:-}"
 
 mkdir -p "$(dirname "$OUTPUT")"
+
+resolve_merged_since() {
+  if [ -n "$MERGED_SINCE" ]; then
+    printf '%s' "$MERGED_SINCE"
+    return
+  fi
+
+  if [ -z "$LOOKBACK_DAYS" ] || [ "$LOOKBACK_DAYS" = "all" ]; then
+    return
+  fi
+
+  case "$LOOKBACK_DAYS" in
+    *[!0-9]*)
+      echo "Invalid REVIEW_GATE_AUDIT_LOOKBACK_DAYS: $LOOKBACK_DAYS" >&2
+      exit 2
+      ;;
+  esac
+
+  if date -u -d "${LOOKBACK_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null; then
+    return
+  fi
+
+  if date -u -v-"${LOOKBACK_DAYS}"d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null; then
+    return
+  fi
+
+  echo "Unable to compute REVIEW_GATE_AUDIT_LOOKBACK_DAYS on this platform" >&2
+  exit 2
+}
+
+MERGED_SINCE="$(resolve_merged_since)"
 
 actors_json="$(
   if [ -n "$OVERRIDE_ACTORS" ]; then
@@ -32,10 +65,14 @@ write_collection_error() {
     --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg organization "$ORG" \
     --arg reason "$reason" \
+    --arg lookback_days "$LOOKBACK_DAYS" \
+    --arg merged_since "$MERGED_SINCE" \
     '{
       audit_id: $audit_id,
       generated_at: $generated_at,
       organization: $organization,
+      lookback_days: $lookback_days,
+      merged_since: $merged_since,
       passed: false,
       checked: 0,
       violations: [],
@@ -134,8 +171,17 @@ result_json="$(
     --arg audit_id "review-gate-audit" \
     --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg organization "$ORG" \
+    --arg lookback_days "$LOOKBACK_DAYS" \
+    --arg merged_since "$MERGED_SINCE" \
     --argjson actors "$actors_json" \
     '
+      def merged_at($pr):
+        ($pr.mergedAt // $pr.merged_at // "");
+
+      def in_merged_window($pr):
+        ($merged_since == "")
+        or ((merged_at($pr) | fromdateiso8601? // 0) >= ($merged_since | fromdateiso8601? // 0));
+
       def login_of($comment):
         ($comment.author.login // $comment.user.login // "");
 
@@ -163,7 +209,8 @@ result_json="$(
         (.repositories // [])[]
         | (.name // .repo // "") as $repo
         | (.pull_requests // [])[]
-        | select((.mergedAt // .merged_at // "") != "")
+        | select(merged_at(.) != "")
+        | select(in_merged_window(.))
         | select((.reviewDecision // .review_decision // "") == "REVIEW_REQUIRED")
         | select(approved_review_count(.) == 0)
         | override_comment(.) as $override
@@ -172,7 +219,7 @@ result_json="$(
             repo: $repo,
             number: .number,
             url: .url,
-            mergedAt: (.mergedAt // .merged_at // ""),
+            mergedAt: merged_at(.),
             reviewDecision: (.reviewDecision // .review_decision // ""),
             approved_reviews: approved_review_count(.),
             reason: "merged_review_required_without_approval_or_override"
@@ -182,7 +229,8 @@ result_json="$(
         (.repositories // [])[]
         | (.name // .repo // "") as $repo
         | (.pull_requests // [])[]
-        | select((.mergedAt // .merged_at // "") != "")
+        | select(merged_at(.) != "")
+        | select(in_merged_window(.))
         | select((.reviewDecision // .review_decision // "") == "REVIEW_REQUIRED")
         | select(approved_review_count(.) == 0)
         | override_comment(.) as $override
@@ -199,7 +247,8 @@ result_json="$(
       | [
         (.repositories // [])[]
         | (.pull_requests // [])[]
-        | select((.mergedAt // .merged_at // "") != "")
+        | select(merged_at(.) != "")
+        | select(in_merged_window(.))
       ] as $checked_prs
       | [
         (.repositories // [])[]
@@ -210,6 +259,8 @@ result_json="$(
           audit_id: $audit_id,
           generated_at: $generated_at,
           organization: $organization,
+          lookback_days: $lookback_days,
+          merged_since: $merged_since,
           repositories: [(.repositories // [])[] | (.name // .repo // "")],
           passed: (($violations | length) == 0 and ($collection_errors | length) == 0),
           checked: ($checked_prs | length),
@@ -227,6 +278,7 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     echo "## Review Gate Audit"
     echo ""
     jq -r '"Checked: \(.checked) | Violations: \(.violations | length) | Accounted overrides: \(.accounted_overrides | length)"' "$OUTPUT"
+    jq -r '"Merged since: \((.merged_since // "") | if . == "" then "full audit" else . end)"' "$OUTPUT"
     echo ""
     if jq -e '(.violations | length) > 0' "$OUTPUT" >/dev/null; then
       echo "| Repo | PR | Reason |"

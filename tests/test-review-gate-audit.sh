@@ -93,6 +93,41 @@ write_override_fixture() {
 JSON
 }
 
+write_mixed_lookback_fixture() {
+  local path="$1"
+  cat > "$path" <<'JSON'
+{
+  "repositories": [
+    {
+      "name": "hl-dispatch",
+      "pull_requests": [
+        {
+          "number": 180,
+          "url": "https://github.com/huanlongAI/hl-dispatch/pull/180",
+          "title": "fix: historical reviewless merge",
+          "mergedAt": "2026-05-01T10:00:00Z",
+          "reviewDecision": "REVIEW_REQUIRED",
+          "headRefOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "reviews": [],
+          "comments": []
+        },
+        {
+          "number": 191,
+          "url": "https://github.com/huanlongAI/hl-dispatch/pull/191",
+          "title": "fix: recent reviewless merge",
+          "mergedAt": "2026-06-04T01:46:46Z",
+          "reviewDecision": "REVIEW_REQUIRED",
+          "headRefOid": "1111111111111111111111111111111111111111",
+          "reviews": [],
+          "comments": []
+        }
+      ]
+    }
+  ]
+}
+JSON
+}
+
 test_reviewless_merge_fails_audit() {
   local tmp output code
   tmp="$(mktemp -d)"
@@ -153,6 +188,30 @@ test_structured_owner_override_accounts_for_reviewless_merge() {
     and .accounted_overrides[0].source == "structured_review_gate_override"
   ' "$tmp/result.json" >/dev/null ||
     fail "structured owner override should account for reviewless merge"
+}
+
+test_merged_since_filters_historical_reviewless_merges() {
+  local tmp code
+  tmp="$(mktemp -d)"
+  write_mixed_lookback_fixture "$tmp/fixture.json"
+
+  set +e
+  REVIEW_GATE_AUDIT_FIXTURE="$tmp/fixture.json" \
+    REVIEW_GATE_AUDIT_OUTPUT="$tmp/result.json" \
+    REVIEW_GATE_AUDIT_MERGED_SINCE="2026-06-04T00:00:00Z" \
+    bash "$SCRIPT" >"$tmp/stdout" 2>"$tmp/stderr"
+  code=$?
+  set -e
+
+  [ "$code" -eq 1 ] || fail "recent reviewless merged PR should still fail audit, got exit $code"
+  jq -e '
+    .passed == false
+    and .merged_since == "2026-06-04T00:00:00Z"
+    and .checked == 1
+    and (.violations | length) == 1
+    and .violations[0].number == 191
+  ' "$tmp/result.json" >/dev/null ||
+    fail "merged_since should exclude historical reviewless merges while keeping recent violations"
 }
 
 test_live_collection_uses_gh_cli_auth_without_token_env() {
@@ -269,10 +328,26 @@ SH
     fail "large PR comment payload should not fail live collection"
 }
 
+test_workflow_exposes_operational_lookback_controls() {
+  local workflow
+  workflow="$ROOT_DIR/.github/workflows/review-gate-audit.yml"
+
+  grep -q 'lookback_days:' "$workflow" ||
+    fail "workflow_dispatch must expose lookback_days"
+  grep -q 'merged_since:' "$workflow" ||
+    fail "workflow_dispatch must expose merged_since"
+  grep -q "REVIEW_GATE_AUDIT_LOOKBACK_DAYS" "$workflow" ||
+    fail "workflow must pass lookback_days to audit script"
+  grep -q "REVIEW_GATE_AUDIT_MERGED_SINCE" "$workflow" ||
+    fail "workflow must pass merged_since to audit script"
+}
+
 test_reviewless_merge_fails_audit
 test_approved_review_passes_audit
 test_structured_owner_override_accounts_for_reviewless_merge
+test_merged_since_filters_historical_reviewless_merges
 test_live_collection_uses_gh_cli_auth_without_token_env
 test_live_collection_handles_large_comment_payload_without_arg_limit
+test_workflow_exposes_operational_lookback_controls
 
 echo "review-gate audit tests passed"
