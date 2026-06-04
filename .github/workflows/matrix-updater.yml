@@ -15,6 +15,15 @@ on:
         required: false
         default: 'N/A'
         type: string
+      llm_provider:
+        description: 'LLM provider: auto prefers HeiyuCode and falls back to Anthropic'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - heiyucode
+          - anthropic
 permissions:
   contents: write
   pull-requests: write
@@ -35,10 +44,19 @@ jobs:
           echo "source_pr=${SOURCE_PR}" >> "$GITHUB_OUTPUT"
           echo "$MATRIX_CHANGE" > /tmp/matrix_change_desc.txt
           cat /tmp/matrix_change_desc.txt
-      - name: Draft matrix update via Claude API
+      - name: Draft matrix update via LLM provider
         id: draft
         env:
+          SENTINEL_LLM_PROVIDER: ${{ inputs.llm_provider || 'auto' }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          HEIYUCODE_AUTH_TOKEN: ${{ secrets.HEIYUCODE_AUTH_TOKEN }}
+          HEIYUCODE_API_KEY: ${{ secrets.HEIYUCODE_API_KEY }}
+          HEIYUCODE_BASE_URL: ${{ vars.HEIYUCODE_BASE_URL }}
+          HEIYUCODE_API_URL: ${{ vars.HEIYUCODE_API_URL }}
+          HEIYUCODE_MODEL: ${{ vars.HEIYUCODE_MODEL }}
+          HEIYUCODE_CLIENT_TIMEOUT_SECONDS: ${{ vars.HEIYUCODE_CLIENT_TIMEOUT_SECONDS || '120' }}
+          LLM_MODEL: ${{ vars.SENTINEL_LLM_MODEL || 'claude-sonnet-4-6' }}
+          LLM_MAX_TOKENS: '8192'
         run: |
           CURRENT_MATRIX=$(cat matrix/sentinel-matrix.yaml)
           MATRIX_CHANGE=$(cat /tmp/matrix_change_desc.txt)
@@ -51,20 +69,24 @@ jobs:
           ${MATRIX_CHANGE}
           ---
           Produce the complete updated sentinel-matrix.yaml with this change applied."
-          PAYLOAD=$(jq -n \
-            --arg model "claude-sonnet-4-6" \
-            --arg system "$SYSTEM_PROMPT" \
-            --arg user "$USER_PROMPT" \
-            '{model: $model, max_tokens: 8192, system: $system, messages: [{role: "user", content: $user}]}')
-          RESPONSE=$(curl -s --max-time 60 \
-            -H "x-api-key: ${ANTHROPIC_API_KEY}" \
-            -H "anthropic-version: 2023-06-01" \
-            -H "content-type: application/json" \
-            -d "$PAYLOAD" \
-            "https://api.anthropic.com/v1/messages" 2>/dev/null || echo "")
-          if [ -n "$RESPONSE" ]; then
-            UPDATED_MATRIX=$(echo "$RESPONSE" | jq -r '.content[0].text // empty' 2>/dev/null || echo "")
+          SYSTEM_PROMPT_FILE="$(mktemp)"
+          USER_PROMPT_FILE="$(mktemp)"
+          LLM_OUTPUT_FILE="$(mktemp)"
+          cleanup_llm_files() {
+            rm -f "$SYSTEM_PROMPT_FILE" "$USER_PROMPT_FILE" "$LLM_OUTPUT_FILE"
+          }
+          trap cleanup_llm_files EXIT
+          printf '%s' "$SYSTEM_PROMPT" > "$SYSTEM_PROMPT_FILE"
+          printf '%s' "$USER_PROMPT" > "$USER_PROMPT_FILE"
+
+          UPDATED_MATRIX=""
+          if LLM_SYSTEM_PROMPT_FILE="$SYSTEM_PROMPT_FILE" \
+            LLM_USER_PROMPT_FILE="$USER_PROMPT_FILE" \
+            LLM_OUTPUT_FILE="$LLM_OUTPUT_FILE" \
+            bash scripts/llm-message-client.sh; then
+            UPDATED_MATRIX=$(cat "$LLM_OUTPUT_FILE")
           fi
+
           if [ -n "$UPDATED_MATRIX" ] && [ ${#UPDATED_MATRIX} -gt 100 ]; then
             echo "$UPDATED_MATRIX" > matrix/sentinel-matrix.yaml
             echo "draft_success=true" >> "$GITHUB_OUTPUT"
