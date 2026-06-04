@@ -45,7 +45,7 @@ write_collection_error() {
 }
 
 collect_live_prs() {
-  local token tmp repos_json repo prs_json enriched_prs pr_number pr_json comments_json
+  local token tmp repositories_file next_file repo prs_file enriched_file pr_file comments_file pr_number pr_json
   token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
 
   gh_with_auth() {
@@ -57,48 +57,68 @@ collect_live_prs() {
   }
 
   tmp="$(mktemp -d)"
-  repos_json="[]"
+  repositories_file="$tmp/repositories.json"
+  printf '[]\n' > "$repositories_file"
 
   for repo in $REPOS; do
-    if ! prs_json=$(gh_with_auth pr list \
+    prs_file="$tmp/${repo}-prs.json"
+    enriched_file="$tmp/${repo}-enriched.json"
+    printf '[]\n' > "$enriched_file"
+
+    if ! gh_with_auth pr list \
       --repo "${ORG}/${repo}" \
       --state merged \
       --limit "$LIMIT" \
-      --json number,title,url,mergedAt,reviewDecision,reviews,headRefOid 2>"$tmp/pr-list.err"); then
-      repos_json="$(jq -c \
+      --json number,title,url,mergedAt,reviewDecision,reviews,headRefOid >"$prs_file" 2>"$tmp/pr-list.err"; then
+      next_file="$tmp/repositories-next.json"
+      jq -c \
         --arg name "$repo" \
-        --arg error "$(cat "$tmp/pr-list.err")" \
-        '. + [{name: $name, pull_requests: [], collection_error: $error}]' <<< "$repos_json")"
+        --rawfile error "$tmp/pr-list.err" \
+        '. + [{name: $name, pull_requests: [], collection_error: $error}]' \
+        "$repositories_file" > "$next_file"
+      mv "$next_file" "$repositories_file"
       continue
     fi
 
-    enriched_prs="[]"
     while IFS= read -r pr_json; do
       [ -z "$pr_json" ] && continue
       pr_number="$(jq -r '.number' <<< "$pr_json")"
-      if comments_json=$(gh_with_auth pr view "$pr_number" \
+      pr_file="$tmp/${repo}-${pr_number}-pr.json"
+      comments_file="$tmp/${repo}-${pr_number}-comments.json"
+      printf '%s\n' "$pr_json" > "$pr_file"
+
+      if gh_with_auth pr view "$pr_number" \
         --repo "${ORG}/${repo}" \
         --json comments \
-        --jq '.comments' 2>"$tmp/pr-view.err"); then
-        enriched_prs="$(jq -c \
-          --argjson pr "$pr_json" \
-          --argjson comments "$comments_json" \
-          '. + [($pr + {comments: $comments})]' <<< "$enriched_prs")"
+        --jq '.comments' >"$comments_file" 2>"$tmp/pr-view.err"; then
+        next_file="$tmp/${repo}-enriched-next.json"
+        jq -c \
+          --slurpfile pr "$pr_file" \
+          --slurpfile comments "$comments_file" \
+          '. + [($pr[0] + {comments: $comments[0]})]' \
+          "$enriched_file" > "$next_file"
+        mv "$next_file" "$enriched_file"
       else
-        enriched_prs="$(jq -c \
-          --argjson pr "$pr_json" \
-          --arg error "$(cat "$tmp/pr-view.err")" \
-          '. + [($pr + {comments: [], comment_collection_error: $error})]' <<< "$enriched_prs")"
+        next_file="$tmp/${repo}-enriched-next.json"
+        jq -c \
+          --slurpfile pr "$pr_file" \
+          --rawfile error "$tmp/pr-view.err" \
+          '. + [($pr[0] + {comments: [], comment_collection_error: $error})]' \
+          "$enriched_file" > "$next_file"
+        mv "$next_file" "$enriched_file"
       fi
-    done < <(jq -c '.[]' <<< "$prs_json")
+    done < <(jq -c '.[]' "$prs_file")
 
-    repos_json="$(jq -c \
+    next_file="$tmp/repositories-next.json"
+    jq -c \
       --arg name "$repo" \
-      --argjson pull_requests "$enriched_prs" \
-      '. + [{name: $name, pull_requests: $pull_requests}]' <<< "$repos_json")"
+      --slurpfile pull_requests "$enriched_file" \
+      '. + [{name: $name, pull_requests: $pull_requests[0]}]' \
+      "$repositories_file" > "$next_file"
+    mv "$next_file" "$repositories_file"
   done
 
-  jq -n --argjson repositories "$repos_json" '{repositories: $repositories}'
+  jq -n --slurpfile repositories "$repositories_file" '{repositories: $repositories[0]}'
 }
 
 if [ -n "$FIXTURE" ]; then

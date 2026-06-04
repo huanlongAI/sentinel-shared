@@ -213,9 +213,66 @@ SH
     fail "live gh collection did not audit fake merged PR"
 }
 
+test_live_collection_handles_large_comment_payload_without_arg_limit() {
+  local tmp
+  tmp="$(mktemp -d)"
+  mkdir -p "$tmp/bin"
+  cat > "$tmp/bin/gh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+  cat <<'JSON'
+[
+  {
+    "number": 200,
+    "url": "https://github.com/huanlongAI/hl-dispatch/pull/200",
+    "title": "fix: approved change with large discussion",
+    "mergedAt": "2026-06-04T04:00:00Z",
+    "reviewDecision": "APPROVED",
+    "headRefOid": "4444444444444444444444444444444444444444",
+    "reviews": [
+      {"state": "APPROVED", "author": {"login": "gate-reviewer"}}
+    ]
+  }
+]
+JSON
+  exit 0
+fi
+
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  printf '[{"body":"'
+  head -c 3000000 /dev/zero | tr '\0' 'x'
+  printf '","author":{"login":"gate-owner"},"url":"https://github.com/huanlongAI/hl-dispatch/pull/200#issuecomment-large"}]\n'
+  exit 0
+fi
+
+echo "unexpected gh invocation: $*" >&2
+exit 1
+SH
+  chmod +x "$tmp/bin/gh"
+
+  PATH="$tmp/bin:$PATH" \
+    GH_TOKEN="" \
+    GITHUB_TOKEN="" \
+    REVIEW_GATE_AUDIT_REPOS="hl-dispatch" \
+    REVIEW_GATE_AUDIT_LIMIT="1" \
+    REVIEW_GATE_AUDIT_OUTPUT="$tmp/result.json" \
+    bash "$SCRIPT" >/dev/null
+
+  jq -e '
+    .passed == true
+    and .checked == 1
+    and (.collection_errors | length) == 0
+    and (.violations | length) == 0
+  ' "$tmp/result.json" >/dev/null ||
+    fail "large PR comment payload should not fail live collection"
+}
+
 test_reviewless_merge_fails_audit
 test_approved_review_passes_audit
 test_structured_owner_override_accounts_for_reviewless_merge
 test_live_collection_uses_gh_cli_auth_without_token_env
+test_live_collection_handles_large_comment_payload_without_arg_limit
 
 echo "review-gate audit tests passed"
