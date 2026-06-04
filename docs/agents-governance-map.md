@@ -44,3 +44,8 @@ Sentinel D-10 blocks:
 - stale `GHThemeManager.current` theme guidance;
 - long `AGENTS.md` files over 32 KiB;
 - `AGENTS.md` duplicating long-form sections that should live in `CLAUDE.md`.
+
+D-10 intentionally ignores runtime/dependency surfaces that are not repo instruction entrypoints:
+
+- `.build/checkouts/**` SwiftPM dependency caches;
+- `.claude/worktrees/**` Claude runtime worktree projections.
