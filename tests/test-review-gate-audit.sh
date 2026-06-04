@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$ROOT_DIR/scripts/review-gate-audit.sh"
+WORKFLOW="$ROOT_DIR/.github/workflows/review-gate-audit.yml"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -24,6 +25,31 @@ write_reviewless_fixture() {
           "mergedAt": "2026-06-04T01:46:46Z",
           "reviewDecision": "REVIEW_REQUIRED",
           "headRefOid": "1111111111111111111111111111111111111111",
+          "reviews": [],
+          "comments": []
+        }
+      ]
+    }
+  ]
+}
+JSON
+}
+
+write_post_effective_reviewless_fixture() {
+  local path="$1"
+  cat > "$path" <<'JSON'
+{
+  "repositories": [
+    {
+      "name": "hl-dispatch",
+      "pull_requests": [
+        {
+          "number": 194,
+          "url": "https://github.com/huanlongAI/hl-dispatch/pull/194",
+          "title": "fix: new reviewless governance change",
+          "mergedAt": "2026-06-04T07:00:00Z",
+          "reviewDecision": "REVIEW_REQUIRED",
+          "headRefOid": "5555555555555555555555555555555555555555",
           "reviews": [],
           "comments": []
         }
@@ -214,6 +240,58 @@ test_merged_since_filters_historical_reviewless_merges() {
     fail "merged_since should exclude historical reviewless merges while keeping recent violations"
 }
 
+test_pre_effective_reviewless_merge_is_accounted_as_legacy() {
+  local tmp code
+  tmp="$(mktemp -d)"
+  write_reviewless_fixture "$tmp/fixture.json"
+
+  set +e
+  REVIEW_GATE_AUDIT_FIXTURE="$tmp/fixture.json" \
+    REVIEW_GATE_AUDIT_OUTPUT="$tmp/result.json" \
+    REVIEW_GATE_AUDIT_EFFECTIVE_AFTER="2026-06-04T06:36:06Z" \
+    bash "$SCRIPT" >"$tmp/stdout" 2>"$tmp/stderr"
+  code=$?
+  set -e
+
+  [ "$code" -eq 0 ] || fail "pre-effective reviewless merged PR should pass as accounted legacy, got exit $code"
+
+  jq -e '
+    .passed == true
+    and .effective_after == "2026-06-04T06:36:06Z"
+    and (.violations | length) == 0
+    and (.accounted_legacy_violations | length) == 1
+    and .accounted_legacy_violations[0].repo == "hl-dispatch"
+    and .accounted_legacy_violations[0].number == 191
+    and .accounted_legacy_violations[0].source == "pre_effective_review_gate_audit_baseline"
+  ' "$tmp/result.json" >/dev/null ||
+    fail "pre-effective reviewless merge should be accounted as legacy, not fail audit"
+}
+
+test_post_effective_reviewless_merge_still_fails_audit() {
+  local tmp code
+  tmp="$(mktemp -d)"
+  write_post_effective_reviewless_fixture "$tmp/fixture.json"
+
+  set +e
+  REVIEW_GATE_AUDIT_FIXTURE="$tmp/fixture.json" \
+    REVIEW_GATE_AUDIT_OUTPUT="$tmp/result.json" \
+    REVIEW_GATE_AUDIT_EFFECTIVE_AFTER="2026-06-04T06:36:06Z" \
+    bash "$SCRIPT" >"$tmp/stdout" 2>"$tmp/stderr"
+  code=$?
+  set -e
+
+  [ "$code" -ne 0 ] || fail "post-effective reviewless merged PR must fail audit"
+  jq -e '
+    .passed == false
+    and .effective_after == "2026-06-04T06:36:06Z"
+    and (.violations | length) == 1
+    and (.accounted_legacy_violations | length) == 0
+    and .violations[0].repo == "hl-dispatch"
+    and .violations[0].number == 194
+  ' "$tmp/result.json" >/dev/null ||
+    fail "post-effective reviewless merge violation was not recorded"
+}
+
 test_live_collection_uses_gh_cli_auth_without_token_env() {
   local tmp code
   tmp="$(mktemp -d)"
@@ -328,26 +406,31 @@ SH
     fail "large PR comment payload should not fail live collection"
 }
 
-test_workflow_exposes_operational_lookback_controls() {
-  local workflow
-  workflow="$ROOT_DIR/.github/workflows/review-gate-audit.yml"
-
-  grep -q 'lookback_days:' "$workflow" ||
+test_workflow_exposes_operational_review_gate_controls() {
+  grep -q 'lookback_days:' "$WORKFLOW" ||
     fail "workflow_dispatch must expose lookback_days"
-  grep -q 'merged_since:' "$workflow" ||
+  grep -q 'merged_since:' "$WORKFLOW" ||
     fail "workflow_dispatch must expose merged_since"
-  grep -q "REVIEW_GATE_AUDIT_LOOKBACK_DAYS" "$workflow" ||
+  grep -q 'effective_after:' "$WORKFLOW" ||
+    fail "workflow_dispatch must expose effective_after"
+  grep -q "REVIEW_GATE_AUDIT_LOOKBACK_DAYS" "$WORKFLOW" ||
     fail "workflow must pass lookback_days to audit script"
-  grep -q "REVIEW_GATE_AUDIT_MERGED_SINCE" "$workflow" ||
+  grep -q "REVIEW_GATE_AUDIT_MERGED_SINCE" "$WORKFLOW" ||
     fail "workflow must pass merged_since to audit script"
+  grep -q 'REVIEW_GATE_AUDIT_EFFECTIVE_AFTER:' "$WORKFLOW" ||
+    fail "workflow must pass REVIEW_GATE_AUDIT_EFFECTIVE_AFTER"
+  grep -q '2026-06-04T06:36:06Z' "$WORKFLOW" ||
+    fail "workflow must default to #117 merge activation time"
 }
 
 test_reviewless_merge_fails_audit
 test_approved_review_passes_audit
 test_structured_owner_override_accounts_for_reviewless_merge
 test_merged_since_filters_historical_reviewless_merges
+test_pre_effective_reviewless_merge_is_accounted_as_legacy
+test_post_effective_reviewless_merge_still_fails_audit
 test_live_collection_uses_gh_cli_auth_without_token_env
 test_live_collection_handles_large_comment_payload_without_arg_limit
-test_workflow_exposes_operational_lookback_controls
+test_workflow_exposes_operational_review_gate_controls
 
 echo "review-gate audit tests passed"

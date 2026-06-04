@@ -16,6 +16,7 @@ FIXTURE="${REVIEW_GATE_AUDIT_FIXTURE:-}"
 OVERRIDE_ACTORS="${REVIEW_GATE_AUDIT_OVERRIDE_ACTORS:-}"
 LOOKBACK_DAYS="${REVIEW_GATE_AUDIT_LOOKBACK_DAYS:-}"
 MERGED_SINCE="${REVIEW_GATE_AUDIT_MERGED_SINCE:-}"
+EFFECTIVE_AFTER="${REVIEW_GATE_AUDIT_EFFECTIVE_AFTER:-}"
 
 mkdir -p "$(dirname "$OUTPUT")"
 
@@ -67,15 +68,18 @@ write_collection_error() {
     --arg reason "$reason" \
     --arg lookback_days "$LOOKBACK_DAYS" \
     --arg merged_since "$MERGED_SINCE" \
+    --arg effective_after "$EFFECTIVE_AFTER" \
     '{
       audit_id: $audit_id,
       generated_at: $generated_at,
       organization: $organization,
       lookback_days: $lookback_days,
       merged_since: $merged_since,
+      effective_after: (if $effective_after == "" then null else $effective_after end),
       passed: false,
       checked: 0,
       violations: [],
+      accounted_legacy_violations: [],
       accounted_overrides: [],
       collection_errors: [{reason: $reason}]
     }' > "$OUTPUT"
@@ -173,6 +177,7 @@ result_json="$(
     --arg organization "$ORG" \
     --arg lookback_days "$LOOKBACK_DAYS" \
     --arg merged_since "$MERGED_SINCE" \
+    --arg effective_after "$EFFECTIVE_AFTER" \
     --argjson actors "$actors_json" \
     '
       def merged_at($pr):
@@ -181,6 +186,10 @@ result_json="$(
       def in_merged_window($pr):
         ($merged_since == "")
         or ((merged_at($pr) | fromdateiso8601? // 0) >= ($merged_since | fromdateiso8601? // 0));
+
+      def is_pre_effective($pr):
+        ($effective_after != "")
+        and ((merged_at($pr) | fromdateiso8601? // 0) < ($effective_after | fromdateiso8601? // 0));
 
       def login_of($comment):
         ($comment.author.login // $comment.user.login // "");
@@ -215,6 +224,7 @@ result_json="$(
         | select(approved_review_count(.) == 0)
         | override_comment(.) as $override
         | select($override == null)
+        | select(is_pre_effective(.) | not)
         | {
             repo: $repo,
             number: .number,
@@ -225,6 +235,28 @@ result_json="$(
             reason: "merged_review_required_without_approval_or_override"
           }
       ] as $violations
+      | [
+        (.repositories // [])[]
+        | (.name // .repo // "") as $repo
+        | (.pull_requests // [])[]
+        | select(merged_at(.) != "")
+        | select(in_merged_window(.))
+        | select((.reviewDecision // .review_decision // "") == "REVIEW_REQUIRED")
+        | select(approved_review_count(.) == 0)
+        | override_comment(.) as $override
+        | select($override == null)
+        | select(is_pre_effective(.))
+        | {
+            repo: $repo,
+            number: .number,
+            url: .url,
+            mergedAt: merged_at(.),
+            reviewDecision: (.reviewDecision // .review_decision // ""),
+            approved_reviews: approved_review_count(.),
+            source: "pre_effective_review_gate_audit_baseline",
+            effective_after: $effective_after
+          }
+      ] as $accounted_legacy_violations
       | [
         (.repositories // [])[]
         | (.name // .repo // "") as $repo
@@ -261,10 +293,12 @@ result_json="$(
           organization: $organization,
           lookback_days: $lookback_days,
           merged_since: $merged_since,
+          effective_after: (if $effective_after == "" then null else $effective_after end),
           repositories: [(.repositories // [])[] | (.name // .repo // "")],
           passed: (($violations | length) == 0 and ($collection_errors | length) == 0),
           checked: ($checked_prs | length),
           violations: $violations,
+          accounted_legacy_violations: $accounted_legacy_violations,
           accounted_overrides: $accounted_overrides,
           collection_errors: $collection_errors
         }
@@ -277,8 +311,9 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
     echo "## Review Gate Audit"
     echo ""
-    jq -r '"Checked: \(.checked) | Violations: \(.violations | length) | Accounted overrides: \(.accounted_overrides | length)"' "$OUTPUT"
+    jq -r '"Checked: \(.checked) | Violations: \(.violations | length) | Legacy accounted: \(.accounted_legacy_violations | length) | Accounted overrides: \(.accounted_overrides | length)"' "$OUTPUT"
     jq -r '"Merged since: \((.merged_since // "") | if . == "" then "full audit" else . end)"' "$OUTPUT"
+    jq -r '"Effective after: \((.effective_after // "") | if . == "" then "none" else . end)"' "$OUTPUT"
     echo ""
     if jq -e '(.violations | length) > 0' "$OUTPUT" >/dev/null; then
       echo "| Repo | PR | Reason |"
