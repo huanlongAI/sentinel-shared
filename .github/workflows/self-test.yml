@@ -41,6 +41,7 @@ jobs:
           bash tests/test-policy-file.sh
           bash tests/test-d7-d8.sh
           bash tests/test-caller-sync-workflow.sh
+          bash tests/test-caller-token-write-probe-workflow.sh
           bash tests/test-dashboard-workflow.sh
           bash tests/test-cascade-workflow.sh
           bash tests/test-llm-review-provider-router.sh
