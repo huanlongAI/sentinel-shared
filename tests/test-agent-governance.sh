@@ -143,6 +143,36 @@ fi
 assert_contains "$BUILD_CACHE_OUTPUT" "D-10 PASS"
 pass "ignores build dependency cache instruction files"
 
+# Claude runtime worktrees are not repo instruction entrypoints.
+CLAUDE_WORKTREE_REPO="$TMP_ROOT/claude-worktree"
+make_repo "$CLAUDE_WORKTREE_REPO"
+cat > "$CLAUDE_WORKTREE_REPO/AGENTS.md" <<'EOF'
+# Repo AGENTS
+
+本文件是 Codex 入口。完整项目规则见 `CLAUDE.md`。
+EOF
+cat > "$CLAUDE_WORKTREE_REPO/CLAUDE.md" <<'EOF'
+# Repo CLAUDE
+
+> **Write-Owner: NODE-M**
+EOF
+mkdir -p "$CLAUDE_WORKTREE_REPO/.claude/worktrees/musing-vaughan-9b904b"
+cat > "$CLAUDE_WORKTREE_REPO/.claude/worktrees/musing-vaughan-9b904b/CLAUDE.md" <<'EOF'
+# Runtime worktree CLAUDE
+
+颜色通过 GHThemeManager.current.xxx 引用。
+EOF
+set +e
+CLAUDE_WORKTREE_OUTPUT=$(run_check "$CLAUDE_WORKTREE_REPO")
+CLAUDE_WORKTREE_CODE=$?
+set -e
+if [ "$CLAUDE_WORKTREE_CODE" -ne 0 ]; then
+  echo "$CLAUDE_WORKTREE_OUTPUT"
+  fail "expected Claude runtime worktree instruction files to be ignored"
+fi
+assert_contains "$CLAUDE_WORKTREE_OUTPUT" "D-10 PASS"
+pass "ignores Claude runtime worktree instruction files"
+
 # Thin AGENTS.md plus CLAUDE.md passes.
 PASS_REPO="$TMP_ROOT/pass"
 make_repo "$PASS_REPO"
