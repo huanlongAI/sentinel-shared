@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKFLOW="$ROOT_DIR/.github/workflows/caller-token-write-probe.yml"
+TARGETS_FILE="$ROOT_DIR/matrix/caller-target-repos.txt"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -10,22 +11,22 @@ fail() {
 }
 
 [ -f "$WORKFLOW" ] || fail "caller token write probe workflow must exist"
+[ -f "$TARGETS_FILE" ] || fail "caller target repo config must exist"
+
+if ! grep -Eq '^[A-Za-z0-9._-]+$' "$TARGETS_FILE"; then
+  fail "caller target repo config must contain at least one plain repo name"
+fi
 
 for expected in \
   'name: Caller Token Write Probe' \
   'workflow_dispatch:' \
   'target_repo:' \
-  'type: choice' \
-  'hl-platform' \
-  'hl-framework' \
-  'hl-factory' \
-  'hl-dispatch' \
-  'hl-contracts' \
-  'hl-console-native' \
-  'team-memory' \
+  'type: string' \
   'GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}' \
+  'TARGET_REPOS_FILE: matrix/caller-target-repos.txt' \
   "CLEANUP: \${{ github.event.inputs.cleanup || 'true' }}" \
-  'HUANLONG_PROBE_REPOS:' \
+  'load_probe_targets()' \
+  'PROBE_TARGETS="$(load_probe_targets)"' \
   'PROBE_BRANCH="${PROBE_BRANCH_PREFIX}-${RUN_ID}"' \
   'PROBE_PATH=".github/workflows/sentinel-token-write-probe-${RUN_ID}.yml"' \
   'BRANCH_CREATED="false"' \
@@ -49,8 +50,18 @@ if grep -Fq "CLEANUP: \${{ inputs.cleanup || 'true' }}" "$WORKFLOW"; then
 fi
 
 for forbidden in \
+  'type: choice' \
+  'options:' \
+  'HUANLONG_PROBE_REPOS' \
   'tzhOS' \
   'super-founder' \
+  'hl-platform' \
+  'hl-framework' \
+  'hl-factory' \
+  'hl-dispatch' \
+  'hl-contracts' \
+  'hl-console-native' \
+  'team-memory' \
   '/pulls' \
   'sentinel-caller-sync'
 do
