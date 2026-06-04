@@ -6,6 +6,7 @@ MATRIX_WORKFLOW="$ROOT_DIR/.github/workflows/matrix-updater.yml"
 AUTOFIX_WORKFLOW="$ROOT_DIR/.github/workflows/sentinel-autofix.yml"
 AUTO_FIX_SCRIPT="$ROOT_DIR/scripts/auto-fix.sh"
 CLIENT_SCRIPT="$ROOT_DIR/scripts/llm-message-client.sh"
+CLAUDE_DOC="$ROOT_DIR/CLAUDE.md"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -28,7 +29,7 @@ assert_file_not_contains() {
   fi
 }
 
-for file in "$MATRIX_WORKFLOW" "$AUTOFIX_WORKFLOW" "$AUTO_FIX_SCRIPT"; do
+for file in "$MATRIX_WORKFLOW" "$AUTOFIX_WORKFLOW" "$AUTO_FIX_SCRIPT" "$CLAUDE_DOC"; do
   [ -f "$file" ] || fail "Missing expected file: $file"
 done
 
@@ -61,6 +62,10 @@ assert_file_contains "$CLIENT_SCRIPT" "HEIYUCODE_API_KEY"
 assert_file_contains "$CLIENT_SCRIPT" "Authorization: Bearer"
 assert_file_contains "$CLIENT_SCRIPT" "x-api-key"
 assert_file_contains "$CLIENT_SCRIPT" "https://api.anthropic.com/v1/messages"
+
+assert_file_contains "$CLAUDE_DOC" "llm-message-client.sh"
+assert_file_contains "$CLAUDE_DOC" "LLM provider router"
+assert_file_not_contains "$CLAUDE_DOC" "LLM 一致性审查（Claude API）"
 
 ruby -e 'require "yaml"; ARGV.each { |file| YAML.load_file(file) }' \
   "$MATRIX_WORKFLOW" \

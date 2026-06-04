@@ -25,7 +25,8 @@ scripts/
   precheck-directory.sh      # D-4: 目录规范
   precheck-capability-source.sh  # D-5: 能力来源标注
   precheck-brand-token.sh    # D-6: Brand Token 硬编码检测
-  llm-review.sh              # LLM 一致性审查（Claude API）
+  llm-review.sh              # Required gate LLM provider router
+  llm-message-client.sh      # Auxiliary workflow LLM provider router
 prompts/
   system-prompt.md           # LLM 审查层 system prompt
 ```
