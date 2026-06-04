@@ -119,6 +119,38 @@ write_override_fixture() {
 JSON
 }
 
+write_natural_language_override_fixture() {
+  local path="$1"
+  cat > "$path" <<'JSON'
+{
+  "repositories": [
+    {
+      "name": "hl-dispatch",
+      "pull_requests": [
+        {
+          "number": 195,
+          "url": "https://github.com/huanlongAI/hl-dispatch/pull/195",
+          "title": "fix: natural language bypass note",
+          "mergedAt": "2026-06-04T08:00:00Z",
+          "reviewDecision": "REVIEW_REQUIRED",
+          "headRefOid": "6666666666666666666666666666666666666666",
+          "reviews": [],
+          "comments": [
+            {
+              "body": "Founder explicitly authorized bypass review gate; checks were green.",
+              "author": {"login": "gate-owner"},
+              "createdAt": "2026-06-04T08:01:00Z",
+              "url": "https://github.com/huanlongAI/hl-dispatch/pull/195#issuecomment-1"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+JSON
+}
+
 write_mixed_lookback_fixture() {
   local path="$1"
   cat > "$path" <<'JSON'
@@ -214,6 +246,30 @@ test_structured_owner_override_accounts_for_reviewless_merge() {
     and .accounted_overrides[0].source == "structured_review_gate_override"
   ' "$tmp/result.json" >/dev/null ||
     fail "structured owner override should account for reviewless merge"
+}
+
+test_natural_language_bypass_comment_does_not_account_override() {
+  local tmp code
+  tmp="$(mktemp -d)"
+  write_natural_language_override_fixture "$tmp/fixture.json"
+
+  set +e
+  REVIEW_GATE_AUDIT_FIXTURE="$tmp/fixture.json" \
+    REVIEW_GATE_AUDIT_OUTPUT="$tmp/result.json" \
+    REVIEW_GATE_AUDIT_OVERRIDE_ACTORS="gate-owner" \
+    bash "$SCRIPT" >"$tmp/stdout" 2>"$tmp/stderr"
+  code=$?
+  set -e
+
+  [ "$code" -eq 1 ] || fail "natural language bypass comment must not account reviewless merge, got exit $code"
+  jq -e '
+    .passed == false
+    and (.violations | length) == 1
+    and (.accounted_overrides | length) == 0
+    and .violations[0].repo == "hl-dispatch"
+    and .violations[0].number == 195
+  ' "$tmp/result.json" >/dev/null ||
+    fail "natural language bypass comment should remain a review gate violation"
 }
 
 test_merged_since_filters_historical_reviewless_merges() {
@@ -413,12 +469,18 @@ test_workflow_exposes_operational_review_gate_controls() {
     fail "workflow_dispatch must expose merged_since"
   grep -q 'effective_after:' "$WORKFLOW" ||
     fail "workflow_dispatch must expose effective_after"
+  grep -q 'override_actors:' "$WORKFLOW" ||
+    fail "workflow_dispatch must expose override_actors"
   grep -q "REVIEW_GATE_AUDIT_LOOKBACK_DAYS" "$WORKFLOW" ||
     fail "workflow must pass lookback_days to audit script"
   grep -q "REVIEW_GATE_AUDIT_MERGED_SINCE" "$WORKFLOW" ||
     fail "workflow must pass merged_since to audit script"
   grep -q 'REVIEW_GATE_AUDIT_EFFECTIVE_AFTER:' "$WORKFLOW" ||
     fail "workflow must pass REVIEW_GATE_AUDIT_EFFECTIVE_AFTER"
+  grep -q 'REVIEW_GATE_AUDIT_OVERRIDE_ACTORS:' "$WORKFLOW" ||
+    fail "workflow must pass REVIEW_GATE_AUDIT_OVERRIDE_ACTORS"
+  grep -q 'vars.REVIEW_GATE_AUDIT_OVERRIDE_ACTORS' "$WORKFLOW" ||
+    fail "workflow must support REVIEW_GATE_AUDIT_OVERRIDE_ACTORS repository variable"
   grep -q '2026-06-04T06:36:06Z' "$WORKFLOW" ||
     fail "workflow must default to #117 merge activation time"
 }
@@ -426,6 +488,7 @@ test_workflow_exposes_operational_review_gate_controls() {
 test_reviewless_merge_fails_audit
 test_approved_review_passes_audit
 test_structured_owner_override_accounts_for_reviewless_merge
+test_natural_language_bypass_comment_does_not_account_override
 test_merged_since_filters_historical_reviewless_merges
 test_pre_effective_reviewless_merge_is_accounted_as_legacy
 test_post_effective_reviewless_merge_still_fails_audit

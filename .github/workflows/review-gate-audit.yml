@@ -28,6 +28,11 @@ on:
         required: false
         default: "2026-06-04T06:36:06Z"
         type: string
+      override_actors:
+        description: Space-separated actors allowed to record structured review gate overrides
+        required: false
+        default: ""
+        type: string
   schedule:
     - cron: '20 1 * * *'
 
@@ -52,4 +57,5 @@ jobs:
           REVIEW_GATE_AUDIT_LOOKBACK_DAYS: ${{ inputs.lookback_days || '7' }}
           REVIEW_GATE_AUDIT_MERGED_SINCE: ${{ inputs.merged_since || '' }}
           REVIEW_GATE_AUDIT_EFFECTIVE_AFTER: ${{ inputs.effective_after || '2026-06-04T06:36:06Z' }}
+          REVIEW_GATE_AUDIT_OVERRIDE_ACTORS: ${{ inputs.override_actors || vars.REVIEW_GATE_AUDIT_OVERRIDE_ACTORS || '' }}
         run: bash scripts/review-gate-audit.sh
