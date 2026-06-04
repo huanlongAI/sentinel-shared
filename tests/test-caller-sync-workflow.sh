@@ -3,18 +3,14 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CALLER_SYNC_WORKFLOW="$ROOT_DIR/.github/workflows/caller-sync.yml"
-TARGETS_FILE="$ROOT_DIR/matrix/caller-target-repos.txt"
+TARGET_RESOLVER="$ROOT_DIR/scripts/caller-targets.sh"
 
 fail() {
   echo "FAIL: $*" >&2
   exit 1
 }
 
-[ -f "$TARGETS_FILE" ] || fail "caller target repo config must exist"
-
-if ! grep -Eq '^[A-Za-z0-9._-]+$' "$TARGETS_FILE"; then
-  fail "caller target repo config must contain at least one plain repo name"
-fi
+[ -x "$TARGET_RESOLVER" ] || fail "caller target resolver must exist"
 
 if grep -q '\${{ inputs\.dry_run || '\''true'\'' }}' "$CALLER_SYNC_WORKFLOW"; then
   fail "caller-sync must not coerce boolean false dry_run input back to true"
@@ -51,7 +47,11 @@ for expected in \
   'LLM provider credentials are consumed only by sentinel-shared provider router.' \
   'HeiyuCode is preferred when configured; Anthropic remains the fallback provider.' \
   'actions/checkout@v5' \
-  'TARGET_REPOS_FILE: matrix/caller-target-repos.txt' \
+  'REPO_MAP_REPO: huanlongAI/tzhOS' \
+  'REPO_MAP_PATH: 40-PPR/REPO-MAP.md' \
+  'REPO_MAP_REF: main' \
+  'TARGET_RESOLVER: scripts/caller-targets.sh' \
+  'load_repo_map()' \
   'load_downstream_repos()' \
   'DOWNSTREAM_REPOS="$(load_downstream_repos)"' \
   'target_repos:' \
@@ -82,6 +82,7 @@ done
 
 for forbidden in \
   'DOWNSTREAM_REPOS: >-' \
+  'matrix/caller-target-repos.txt' \
   'tzhOS tzh-Harness tzh-agent-configs' \
   'hl-platform hl-framework hl-factory' \
   'hl-dispatch hl-contracts hl-console-native team-memory'

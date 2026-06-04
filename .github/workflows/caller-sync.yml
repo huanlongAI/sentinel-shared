@@ -19,7 +19,10 @@ permissions:
   contents: read
 
 env:
-  TARGET_REPOS_FILE: matrix/caller-target-repos.txt
+  REPO_MAP_REPO: huanlongAI/tzhOS
+  REPO_MAP_PATH: 40-PPR/REPO-MAP.md
+  REPO_MAP_REF: main
+  TARGET_RESOLVER: scripts/caller-targets.sh
 
   CANONICAL_BODY: |
     # ============================================================================
@@ -86,19 +89,42 @@ jobs:
           INVALID_TARGETS=""
           REPORT=""
 
-          load_downstream_repos() {
-            if [ ! -f "$TARGET_REPOS_FILE" ]; then
-              echo "::error::Caller target repo config missing: ${TARGET_REPOS_FILE}" >&2
+          load_repo_map() {
+            local repo_map_file="/tmp/repo-map.md"
+            local http_code
+
+            if [ -z "${GH_TOKEN}" ]; then
+              echo "::error::CASCADE_TOKEN is not configured" >&2
               return 1
             fi
 
-            { grep -E '^[A-Za-z0-9._-]+$' "$TARGET_REPOS_FILE" || true; } | tr '\n' ' '
+            http_code="$(curl -s -L -o "$repo_map_file" -w "%{http_code}" \
+              -H "Authorization: token ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github.raw+json" \
+              "https://api.github.com/repos/${REPO_MAP_REPO}/contents/${REPO_MAP_PATH}?ref=${REPO_MAP_REF}")"
+
+            if [ "$http_code" != "200" ]; then
+              echo "::error::Cannot load REPO-MAP from ${REPO_MAP_REPO}/${REPO_MAP_PATH}@${REPO_MAP_REF} (HTTP ${http_code})" >&2
+              return 1
+            fi
+
+            echo "$repo_map_file"
           }
 
-          DOWNSTREAM_REPOS="$(load_downstream_repos)"
-          if [ -z "$DOWNSTREAM_REPOS" ]; then
-            FAILED="empty_target_config,"
-            echo "::error::Caller target repo config contains no targets: ${TARGET_REPOS_FILE}"
+          load_downstream_repos() {
+            local repo_map_file
+
+            if [ ! -x "$TARGET_RESOLVER" ]; then
+              echo "::error::Caller target resolver missing or not executable: ${TARGET_RESOLVER}" >&2
+              return 1
+            fi
+
+            repo_map_file="$(load_repo_map)" || return 1
+            bash "$TARGET_RESOLVER" from-file "$repo_map_file" | tr '\n' ' '
+          }
+
+          if ! DOWNSTREAM_REPOS="$(load_downstream_repos)"; then
+            FAILED="repo_map_target_load_failed,"
             echo "drifted=" >> "$GITHUB_OUTPUT"
             echo "drift_count=0" >> "$GITHUB_OUTPUT"
             echo "synced=" >> "$GITHUB_OUTPUT"
@@ -109,7 +135,28 @@ jobs:
               echo "## Caller Workflow Sync Report"
               echo ""
               echo "Mode: $( [ "$DRY_RUN" = "true" ] && echo 'DRY RUN (preview only)' || echo 'LIVE (PRs created)')"
-              echo "Targets: ${TARGET_REPOS_INPUT:-from ${TARGET_REPOS_FILE}}"
+              echo "Targets: REPO-MAP load failed"
+              echo "Synced: 0 | Drifted: 0 | Missing: 0 | Failed: 1"
+              echo ""
+              echo "Failed targets: ${FAILED%,}"
+            } > /tmp/sync-report.md
+            exit 0
+          fi
+
+          if [ -z "$DOWNSTREAM_REPOS" ]; then
+            FAILED="empty_target_config,"
+            echo "::error::REPO-MAP target resolver returned no caller targets"
+            echo "drifted=" >> "$GITHUB_OUTPUT"
+            echo "drift_count=0" >> "$GITHUB_OUTPUT"
+            echo "synced=" >> "$GITHUB_OUTPUT"
+            echo "missing=" >> "$GITHUB_OUTPUT"
+            echo "failed=${FAILED}" >> "$GITHUB_OUTPUT"
+            echo "failed_count=1" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Caller Workflow Sync Report"
+              echo ""
+              echo "Mode: $( [ "$DRY_RUN" = "true" ] && echo 'DRY RUN (preview only)' || echo 'LIVE (PRs created)')"
+              echo "Targets: ${TARGET_REPOS_INPUT:-from ${REPO_MAP_REPO}/${REPO_MAP_PATH}@${REPO_MAP_REF}}"
               echo "Synced: 0 | Drifted: 0 | Missing: 0 | Failed: 1"
               echo ""
               echo "Failed targets: ${FAILED%,}"

@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKFLOW="$ROOT_DIR/.github/workflows/caller-token-write-probe.yml"
-TARGETS_FILE="$ROOT_DIR/matrix/caller-target-repos.txt"
+TARGET_RESOLVER="$ROOT_DIR/scripts/caller-targets.sh"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -11,11 +11,7 @@ fail() {
 }
 
 [ -f "$WORKFLOW" ] || fail "caller token write probe workflow must exist"
-[ -f "$TARGETS_FILE" ] || fail "caller target repo config must exist"
-
-if ! grep -Eq '^[A-Za-z0-9._-]+$' "$TARGETS_FILE"; then
-  fail "caller target repo config must contain at least one plain repo name"
-fi
+[ -x "$TARGET_RESOLVER" ] || fail "caller target resolver must exist"
 
 for expected in \
   'name: Caller Token Write Probe' \
@@ -23,8 +19,12 @@ for expected in \
   'target_repo:' \
   'type: string' \
   'GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}' \
-  'TARGET_REPOS_FILE: matrix/caller-target-repos.txt' \
+  'REPO_MAP_REPO: huanlongAI/tzhOS' \
+  'REPO_MAP_PATH: 40-PPR/REPO-MAP.md' \
+  'REPO_MAP_REF: main' \
+  'TARGET_RESOLVER: scripts/caller-targets.sh' \
   "CLEANUP: \${{ github.event.inputs.cleanup || 'true' }}" \
+  'load_repo_map()' \
   'load_probe_targets()' \
   'PROBE_TARGETS="$(load_probe_targets)"' \
   'PROBE_BRANCH="${PROBE_BRANCH_PREFIX}-${RUN_ID}"' \
@@ -53,7 +53,7 @@ for forbidden in \
   'type: choice' \
   'options:' \
   'HUANLONG_PROBE_REPOS' \
-  'tzhOS' \
+  'matrix/caller-target-repos.txt' \
   'super-founder' \
   'hl-platform' \
   'hl-framework' \
