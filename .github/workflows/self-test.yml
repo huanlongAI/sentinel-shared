@@ -47,6 +47,7 @@ jobs:
           bash tests/test-llm-message-client.sh
           bash tests/test-aux-llm-workflows.sh
           bash tests/test-owner-reviewed-override.sh
+          bash tests/test-review-gate-audit.sh
           bash tests/test-agent-governance.sh
           bash tests/test-self-test-workflow.sh
 

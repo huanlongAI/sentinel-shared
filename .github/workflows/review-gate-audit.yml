@@ -1,0 +1,37 @@
+name: Review Gate Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      repos:
+        description: Space-separated repositories to audit
+        required: false
+        default: "hl-platform hl-framework hl-factory hl-dispatch hl-contracts hl-console-native team-memory"
+        type: string
+      limit:
+        description: Merged PRs per repository to inspect
+        required: false
+        default: "30"
+        type: string
+  schedule:
+    - cron: '20 1 * * *'
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Audit merged PR review gate evidence
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          REVIEW_GATE_AUDIT_REPOS: ${{ inputs.repos || 'hl-platform hl-framework hl-factory hl-dispatch hl-contracts hl-console-native team-memory' }}
+          REVIEW_GATE_AUDIT_LIMIT: ${{ inputs.limit || '30' }}
+        run: bash scripts/review-gate-audit.sh
