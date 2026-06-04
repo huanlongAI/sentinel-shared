@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$ROOT_DIR/scripts/precheck-agent-governance.sh"
+MAP_DOC="$ROOT_DIR/docs/agents-governance-map.md"
 
 PASS_COUNT=0
 
@@ -42,6 +43,13 @@ run_check() {
 
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
+
+MAP_DOC_CONTENT="$(cat "$MAP_DOC")"
+assert_contains "$MAP_DOC_CONTENT" "REPO-MAP.md@v1.4.12"
+assert_contains "$MAP_DOC_CONTENT" "不在本文件维护 26 仓逐仓清单"
+assert_contains "$MAP_DOC_CONTENT" "40-PPR/check-deps.sh"
+assert_contains "$MAP_DOC_CONTENT" "hl-app-certificates"
+pass "keeps AGENTS governance map anchored to REPO-MAP SSOT"
 
 # Missing Codex entrypoint is blocked when CLAUDE.md exists.
 MISSING_AGENTS="$TMP_ROOT/missing-agents"
