@@ -113,6 +113,36 @@ assert_contains "$LONG_OUTPUT" "AGENTS.md exceeds 32768 bytes"
 assert_contains "$LONG_OUTPUT" "duplicates long-form governance sections"
 pass "blocks long duplicate AGENTS.md"
 
+# Build dependency caches are not repo instruction entrypoints.
+BUILD_CACHE_REPO="$TMP_ROOT/build-cache"
+make_repo "$BUILD_CACHE_REPO"
+cat > "$BUILD_CACHE_REPO/AGENTS.md" <<'EOF'
+# Repo AGENTS
+
+本文件是 Codex 入口。完整项目规则见 `CLAUDE.md`。
+EOF
+cat > "$BUILD_CACHE_REPO/CLAUDE.md" <<'EOF'
+# Repo CLAUDE
+
+> **Write-Owner: NODE-M**
+EOF
+mkdir -p "$BUILD_CACHE_REPO/.build/checkouts/guanghe"
+cat > "$BUILD_CACHE_REPO/.build/checkouts/guanghe/CLAUDE.md" <<'EOF'
+# Cached dependency CLAUDE
+
+颜色通过 GHThemeManager.current.xxx 引用。
+EOF
+set +e
+BUILD_CACHE_OUTPUT=$(run_check "$BUILD_CACHE_REPO")
+BUILD_CACHE_CODE=$?
+set -e
+if [ "$BUILD_CACHE_CODE" -ne 0 ]; then
+  echo "$BUILD_CACHE_OUTPUT"
+  fail "expected build dependency cache instruction files to be ignored"
+fi
+assert_contains "$BUILD_CACHE_OUTPUT" "D-10 PASS"
+pass "ignores build dependency cache instruction files"
+
 # Thin AGENTS.md plus CLAUDE.md passes.
 PASS_REPO="$TMP_ROOT/pass"
 make_repo "$PASS_REPO"
