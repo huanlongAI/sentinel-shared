@@ -3,11 +3,18 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CALLER_SYNC_WORKFLOW="$ROOT_DIR/.github/workflows/caller-sync.yml"
+TARGETS_FILE="$ROOT_DIR/matrix/caller-target-repos.txt"
 
 fail() {
   echo "FAIL: $*" >&2
   exit 1
 }
+
+[ -f "$TARGETS_FILE" ] || fail "caller target repo config must exist"
+
+if ! grep -Eq '^[A-Za-z0-9._-]+$' "$TARGETS_FILE"; then
+  fail "caller target repo config must contain at least one plain repo name"
+fi
 
 if grep -q '\${{ inputs\.dry_run || '\''true'\'' }}' "$CALLER_SYNC_WORKFLOW"; then
   fail "caller-sync must not coerce boolean false dry_run input back to true"
@@ -43,6 +50,10 @@ for expected in \
   '@main reusable workflow reference is intentional for this thin caller projection.' \
   'LLM provider credentials are consumed only by sentinel-shared provider router.' \
   'HeiyuCode is preferred when configured; Anthropic remains the fallback provider.' \
+  'actions/checkout@v5' \
+  'TARGET_REPOS_FILE: matrix/caller-target-repos.txt' \
+  'load_downstream_repos()' \
+  'DOWNSTREAM_REPOS="$(load_downstream_repos)"' \
   'target_repos:' \
   'TARGET_REPOS_INPUT=' \
   'SELECTED_REPOS=' \
@@ -67,6 +78,17 @@ for expected in \
 do
   grep -q "$expected" "$CALLER_SYNC_WORKFLOW" \
     || fail "caller-sync workflow missing failure-handling marker: $expected"
+done
+
+for forbidden in \
+  'DOWNSTREAM_REPOS: >-' \
+  'tzhOS tzh-Harness tzh-agent-configs' \
+  'hl-platform hl-framework hl-factory' \
+  'hl-dispatch hl-contracts hl-console-native team-memory'
+do
+  if grep -Fq "$forbidden" "$CALLER_SYNC_WORKFLOW"; then
+    fail "caller-sync workflow must not hardcode target repo list: $forbidden"
+  fi
 done
 
 for expected in \

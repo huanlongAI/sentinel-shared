@@ -19,10 +19,7 @@ permissions:
   contents: read
 
 env:
-  DOWNSTREAM_REPOS: >-
-    tzhOS tzh-Harness tzh-agent-configs tzh-evals tzh-dotfiles
-    tzh-legal tzh-marketing guanghe tzhOS-App super-founder
-    hl-platform hl-framework hl-factory hl-dispatch hl-contracts hl-console-native team-memory
+  TARGET_REPOS_FILE: matrix/caller-target-repos.txt
 
   CANONICAL_BODY: |
     # ============================================================================
@@ -70,6 +67,9 @@ jobs:
   sync-check:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
       - name: Check caller workflow drift across repos
         id: drift
         env:
@@ -85,6 +85,37 @@ jobs:
           SELECTED_REPOS=""
           INVALID_TARGETS=""
           REPORT=""
+
+          load_downstream_repos() {
+            if [ ! -f "$TARGET_REPOS_FILE" ]; then
+              echo "::error::Caller target repo config missing: ${TARGET_REPOS_FILE}" >&2
+              return 1
+            fi
+
+            { grep -E '^[A-Za-z0-9._-]+$' "$TARGET_REPOS_FILE" || true; } | tr '\n' ' '
+          }
+
+          DOWNSTREAM_REPOS="$(load_downstream_repos)"
+          if [ -z "$DOWNSTREAM_REPOS" ]; then
+            FAILED="empty_target_config,"
+            echo "::error::Caller target repo config contains no targets: ${TARGET_REPOS_FILE}"
+            echo "drifted=" >> "$GITHUB_OUTPUT"
+            echo "drift_count=0" >> "$GITHUB_OUTPUT"
+            echo "synced=" >> "$GITHUB_OUTPUT"
+            echo "missing=" >> "$GITHUB_OUTPUT"
+            echo "failed=${FAILED}" >> "$GITHUB_OUTPUT"
+            echo "failed_count=1" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Caller Workflow Sync Report"
+              echo ""
+              echo "Mode: $( [ "$DRY_RUN" = "true" ] && echo 'DRY RUN (preview only)' || echo 'LIVE (PRs created)')"
+              echo "Targets: ${TARGET_REPOS_INPUT:-from ${TARGET_REPOS_FILE}}"
+              echo "Synced: 0 | Drifted: 0 | Missing: 0 | Failed: 1"
+              echo ""
+              echo "Failed targets: ${FAILED%,}"
+            } > /tmp/sync-report.md
+            exit 0
+          fi
 
           if [ -z "$TARGET_REPOS_INPUT" ]; then
             SELECTED_REPOS="$DOWNSTREAM_REPOS"

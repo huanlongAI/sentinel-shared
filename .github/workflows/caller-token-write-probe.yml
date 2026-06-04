@@ -4,17 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       target_repo:
-        description: Huanlong downstream repo to probe
+        description: Caller target repo to probe
         required: true
-        type: choice
-        options:
-          - hl-platform
-          - hl-framework
-          - hl-factory
-          - hl-dispatch
-          - hl-contracts
-          - hl-console-native
-          - team-memory
+        type: string
       cleanup:
         description: Delete the temporary probe branch after the run
         required: false
@@ -28,13 +20,16 @@ jobs:
   workflow-file-write-probe:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
       - name: Probe CASCADE_TOKEN workflow-file write permission
         env:
           GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
           TARGET_REPO: ${{ inputs.target_repo }}
+          TARGET_REPOS_FILE: matrix/caller-target-repos.txt
           CLEANUP: ${{ github.event.inputs.cleanup || 'true' }}
           RUN_ID: ${{ github.run_id }}
-          HUANLONG_PROBE_REPOS: "hl-platform hl-framework hl-factory hl-dispatch hl-contracts hl-console-native team-memory"
           PROBE_BRANCH_PREFIX: sentinel-token-write-probe
           TOKEN_REMEDIATION: "CASCADE_TOKEN must have repo read/write access and workflow write permission for the selected downstream repo."
         run: |
@@ -61,6 +56,22 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           }
 
+          load_probe_targets() {
+            if [ ! -f "$TARGET_REPOS_FILE" ]; then
+              echo "::error::Caller target repo config missing: ${TARGET_REPOS_FILE}" >&2
+              return 1
+            fi
+
+            { grep -E '^[A-Za-z0-9._-]+$' "$TARGET_REPOS_FILE" || true; } | tr '\n' ' '
+          }
+
+          PROBE_TARGETS="$(load_probe_targets)"
+          if [ -z "$PROBE_TARGETS" ]; then
+            FAILURE_REASON="empty_target_config"
+            echo "::error::Caller target repo config contains no targets: ${TARGET_REPOS_FILE}"
+            exit 1
+          fi
+
           cleanup_branch() {
             if [ "$BRANCH_CREATED" != "true" ]; then
               write_summary
@@ -82,7 +93,7 @@ jobs:
           }
           trap cleanup_branch EXIT
 
-          case " ${HUANLONG_PROBE_REPOS} " in
+          case " ${PROBE_TARGETS} " in
             *" ${TARGET_REPO} "*)
               ;;
             *)
