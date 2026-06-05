@@ -46,7 +46,26 @@ env:
     hl-console-native team-memory
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify cascade credentials before fan-out
+        env:
+          CASCADE_TOKEN_PRESENT: ${{ secrets.CASCADE_TOKEN != '' }}
+          CASCADE_RESULTS_TOKEN_PRESENT: ${{ secrets.CASCADE_RESULTS_TOKEN != '' }}
+        run: |
+          if [ "$CASCADE_TOKEN_PRESENT" != "true" ]; then
+            echo "::error::CASCADE_TOKEN secret is required for cascade fan-out"
+            exit 1
+          fi
+
+          if [ "$CASCADE_RESULTS_TOKEN_PRESENT" != "true" ]; then
+            echo "::error::CASCADE_RESULTS_TOKEN secret is required before fan-out; grant Actions: read on downstream repositories"
+            exit 1
+          fi
+
   fan-out:
+    needs: preflight
     runs-on: ubuntu-latest
     outputs:
       triggered: ${{ steps.dispatch.outputs.triggered }}
@@ -108,7 +127,7 @@ jobs:
     needs: fan-out
     runs-on: ubuntu-latest
     # Wait for downstream workflows to complete
-    if: always()
+    if: always() && needs.fan-out.result != 'skipped'
     steps:
       - name: Wait for downstream workflows
         run: |
@@ -118,7 +137,7 @@ jobs:
       - name: Collect downstream results
         id: results
         env:
-          GH_TOKEN: ${{ secrets.CASCADE_RESULTS_TOKEN || secrets.CASCADE_TOKEN }}
+          GH_TOKEN: ${{ secrets.CASCADE_RESULTS_TOKEN }}
         run: |
           CASCADE_WAIT_TIMEOUT_SECONDS="${CASCADE_WAIT_TIMEOUT_SECONDS:-900}"
           CASCADE_POLL_INTERVAL_SECONDS="${CASCADE_POLL_INTERVAL_SECONDS:-20}"
