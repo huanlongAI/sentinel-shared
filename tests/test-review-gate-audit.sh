@@ -186,6 +186,21 @@ write_mixed_lookback_fixture() {
 JSON
 }
 
+write_collection_error_fixture() {
+  local path="$1"
+  cat > "$path" <<'JSON'
+{
+  "repositories": [
+    {
+      "name": "hl-platform",
+      "pull_requests": [],
+      "collection_error": "HTTP 404: Resource not accessible by token"
+    }
+  ]
+}
+JSON
+}
+
 test_reviewless_merge_fails_audit() {
   local tmp output code
   tmp="$(mktemp -d)"
@@ -208,6 +223,29 @@ test_reviewless_merge_fails_audit() {
     and .violations[0].reason == "merged_review_required_without_approval_or_override"
   ' "$tmp/result.json" >/dev/null ||
     fail "reviewless merge violation was not recorded"
+}
+
+test_collection_errors_are_reported_in_logs() {
+  local tmp code
+  tmp="$(mktemp -d)"
+  write_collection_error_fixture "$tmp/fixture.json"
+
+  set +e
+  REVIEW_GATE_AUDIT_FIXTURE="$tmp/fixture.json" \
+    REVIEW_GATE_AUDIT_OUTPUT="$tmp/result.json" \
+    bash "$SCRIPT" >"$tmp/stdout" 2>"$tmp/stderr"
+  code=$?
+  set -e
+
+  [ "$code" -eq 1 ] || fail "collection error should fail audit, got exit $code"
+  jq -e '
+    .passed == false
+    and (.collection_errors | length) == 1
+    and .collection_errors[0].repo == "hl-platform"
+  ' "$tmp/result.json" >/dev/null ||
+    fail "collection error should be recorded in JSON output"
+  grep -Fq "::error::hl-platform collection_error HTTP 404: Resource not accessible by token" "$tmp/stdout" ||
+    fail "collection error should be emitted as a GitHub error log"
 }
 
 test_approved_review_passes_audit() {
@@ -486,6 +524,7 @@ test_workflow_exposes_operational_review_gate_controls() {
 }
 
 test_reviewless_merge_fails_audit
+test_collection_errors_are_reported_in_logs
 test_approved_review_passes_audit
 test_structured_owner_override_accounts_for_reviewless_merge
 test_natural_language_bypass_comment_does_not_account_override
