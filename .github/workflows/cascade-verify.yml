@@ -130,15 +130,25 @@ jobs:
             PASS=0
             FAIL=0
             SKIP=0
+            API_ERROR=0
             REPORT=""
 
             for REPO in $DOWNSTREAM_REPOS; do
               # Get the most recent sentinel workflow run
-              RUN_DATA=$(curl -s \
+              RUN_RESPONSE_FILE="$(mktemp)"
+              RUN_HTTP_STATUS=$(curl -sS -o "$RUN_RESPONSE_FILE" -w "%{http_code}" \
                 -H "Authorization: token ${GH_TOKEN}" \
                 -H "Accept: application/vnd.github+json" \
-                "https://api.github.com/repos/huanlongAI/${REPO}/actions/runs?per_page=3&event=repository_dispatch" \
-                | jq -r '.workflow_runs[0] // empty')
+                "https://api.github.com/repos/huanlongAI/${REPO}/actions/runs?per_page=3&event=repository_dispatch")
+
+              if [ "$RUN_HTTP_STATUS" != "200" ]; then
+                REPORT="${REPORT}| ${REPO} | ❌ api_error | actions/runs HTTP ${RUN_HTTP_STATUS} |\n"
+                FAIL=$((FAIL + 1))
+                API_ERROR=$((API_ERROR + 1))
+                continue
+              fi
+
+              RUN_DATA=$(jq -r '.workflow_runs[0] // empty' "$RUN_RESPONSE_FILE")
 
               if [ -z "$RUN_DATA" ]; then
                 REPORT="${REPORT}| ${REPO} | ⏭️ skip | No dispatch run found |\n"
@@ -166,7 +176,7 @@ jobs:
             done
 
             echo "Cascade poll: pass=${PASS}, fail=${FAIL}, skip=${SKIP}"
-            if [ "$SKIP" -eq 0 ] || [ "$SECONDS" -ge "$deadline" ]; then
+            if [ "$API_ERROR" -gt 0 ] || [ "$SKIP" -eq 0 ] || [ "$SECONDS" -ge "$deadline" ]; then
               break
             fi
 
@@ -201,14 +211,20 @@ jobs:
           GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
         run: |
           BODY=$(cat /tmp/cascade-summary.md)
-          curl -s -X POST \
+          ISSUE_HTTP_STATUS=$(curl -sS -o /tmp/cascade-issue-response.json -w "%{http_code}" -X POST \
             -H "Authorization: token ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/huanlongAI/sentinel-shared/issues" \
             -d "$(jq -n \
               --arg title "🚨 Cascade Verification: ${{ steps.results.outputs.fail }} failed / ${{ steps.results.outputs.skip }} incomplete" \
               --arg body "$BODY" \
-              '{title: $title, body: $body, labels: ["cascade-failure"]}')"
+              '{title: $title, body: $body, labels: ["cascade-failure"]}')")
+
+          if [ "$ISSUE_HTTP_STATUS" != "201" ]; then
+            echo "::error::Cascade failure issue creation failed: HTTP ${ISSUE_HTTP_STATUS}"
+            cat /tmp/cascade-issue-response.json
+            exit 1
+          fi
 
       - name: Output summary
         if: always()
