@@ -586,6 +586,8 @@ test_workflow_exposes_operational_review_gate_controls() {
     fail "workflow must pass REVIEW_GATE_AUDIT_OVERRIDE_ACTORS"
   grep -q 'vars.REVIEW_GATE_AUDIT_OVERRIDE_ACTORS' "$WORKFLOW" ||
     fail "workflow must support REVIEW_GATE_AUDIT_OVERRIDE_ACTORS repository variable"
+  grep -Fq 'GH_TOKEN: ${{ secrets.REVIEW_GATE_AUDIT_TOKEN || secrets.CASCADE_TOKEN }}' "$WORKFLOW" ||
+    fail "workflow must prefer dedicated REVIEW_GATE_AUDIT_TOKEN and fall back to CASCADE_TOKEN"
   grep -q '2026-06-04T06:36:06Z' "$WORKFLOW" ||
     fail "workflow must default to #117 merge activation time"
 }
