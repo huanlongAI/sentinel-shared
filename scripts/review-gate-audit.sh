@@ -97,6 +97,137 @@ collect_live_prs() {
     fi
   }
 
+  collect_rest_repo_prs() {
+    local repo out error_file pulls_file merged_pulls_file pr_json pr_number pr_file reviews_file comments_file comments_error_file next_file item_file per_page page page_count merged_count
+    repo="$1"
+    out="$2"
+    error_file="$3"
+    merged_pulls_file="$tmp/${repo}-rest-merged-pulls.json"
+    per_page="100"
+    page="1"
+
+    case "$LIMIT" in
+      ''|*[!0-9]*)
+        printf 'Invalid REVIEW_GATE_AUDIT_LIMIT for REST fallback: %s\n' "$LIMIT" > "$error_file"
+        return 1
+        ;;
+    esac
+
+    if [ "$LIMIT" -lt 1 ]; then
+      printf 'Invalid REVIEW_GATE_AUDIT_LIMIT for REST fallback: %s\n' "$LIMIT" > "$error_file"
+      return 1
+    fi
+
+    printf '[]\n' > "$merged_pulls_file"
+    while :; do
+      pulls_file="$tmp/${repo}-rest-pulls-page-${page}.json"
+      if ! gh_with_auth api "/repos/${ORG}/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=${per_page}&page=${page}" >"$pulls_file" 2>"$error_file"; then
+        return 1
+      fi
+
+      page_count="$(jq 'length' "$pulls_file")"
+      next_file="$tmp/${repo}-rest-merged-pulls-next.json"
+      jq -c \
+        --argjson limit "$LIMIT" \
+        --slurpfile page_pulls "$pulls_file" \
+        '. + [($page_pulls[0] // [])[] | select(.merged_at != null)] | .[:$limit]' \
+        "$merged_pulls_file" > "$next_file"
+      mv "$next_file" "$merged_pulls_file"
+
+      merged_count="$(jq 'length' "$merged_pulls_file")"
+      [ "$merged_count" -ge "$LIMIT" ] && break
+      [ "$page_count" -lt "$per_page" ] && break
+      page="$((page + 1))"
+    done
+
+    printf '[]\n' > "$out"
+    while IFS= read -r pr_json; do
+      [ -z "$pr_json" ] && continue
+      pr_number="$(jq -r '.number' <<< "$pr_json")"
+      pr_file="$tmp/${repo}-${pr_number}-rest-pr.json"
+      reviews_file="$tmp/${repo}-${pr_number}-rest-reviews.json"
+      comments_file="$tmp/${repo}-${pr_number}-rest-comments.json"
+      comments_error_file="$tmp/${repo}-${pr_number}-rest-comments.err"
+      item_file="$tmp/${repo}-${pr_number}-rest-item.json"
+      printf '%s\n' "$pr_json" > "$pr_file"
+
+      if ! gh_with_auth api "/repos/${ORG}/${repo}/pulls/${pr_number}/reviews" >"$reviews_file" 2>"$error_file"; then
+        return 1
+      fi
+
+      if gh_with_auth api "/repos/${ORG}/${repo}/issues/${pr_number}/comments" >"$comments_file" 2>"$comments_error_file"; then
+        jq -nc \
+          --slurpfile pr "$pr_file" \
+          --slurpfile reviews "$reviews_file" \
+          --slurpfile comments "$comments_file" \
+          '
+            ($reviews[0] // []) as $raw_reviews
+            | ($comments[0] // []) as $raw_comments
+            | ($raw_reviews
+              | map({
+                  state: (.state // ""),
+                  author: {login: (.author.login // .user.login // "")},
+                  submittedAt: (.submittedAt // .submitted_at // "")
+                })
+              ) as $reviews_normalized
+            | ($raw_comments
+              | map({
+                  body: (.body // ""),
+                  author: {login: (.author.login // .user.login // "")},
+                  createdAt: (.createdAt // .created_at // ""),
+                  url: (.url // .html_url // "")
+                })
+              ) as $comments_normalized
+            | $pr[0]
+            | {
+                number: .number,
+                url: (.url // .html_url // ""),
+                title: (.title // ""),
+                mergedAt: (.mergedAt // .merged_at // ""),
+                reviewDecision: (if ([$reviews_normalized[] | select(.state == "APPROVED")] | length) > 0 then "APPROVED" else "REVIEW_REQUIRED" end),
+                headRefOid: (.headRefOid // .head.sha // ""),
+                reviews: $reviews_normalized,
+                comments: $comments_normalized
+              }
+          ' > "$item_file"
+      else
+        jq -nc \
+          --slurpfile pr "$pr_file" \
+          --slurpfile reviews "$reviews_file" \
+          --rawfile comment_error "$comments_error_file" \
+          '
+            ($reviews[0] // []) as $raw_reviews
+            | ($raw_reviews
+              | map({
+                  state: (.state // ""),
+                  author: {login: (.author.login // .user.login // "")},
+                  submittedAt: (.submittedAt // .submitted_at // "")
+                })
+              ) as $reviews_normalized
+            | $pr[0]
+            | {
+                number: .number,
+                url: (.url // .html_url // ""),
+                title: (.title // ""),
+                mergedAt: (.mergedAt // .merged_at // ""),
+                reviewDecision: (if ([$reviews_normalized[] | select(.state == "APPROVED")] | length) > 0 then "APPROVED" else "REVIEW_REQUIRED" end),
+                headRefOid: (.headRefOid // .head.sha // ""),
+                reviews: $reviews_normalized,
+                comments: [],
+                comment_collection_error: $comment_error
+              }
+          ' > "$item_file"
+      fi
+
+      next_file="$tmp/${repo}-enriched-next.json"
+      jq -c \
+        --slurpfile pr "$item_file" \
+        '. + [$pr[0]]' \
+        "$out" > "$next_file"
+      mv "$next_file" "$out"
+    done < <(jq -c '.[]' "$merged_pulls_file")
+  }
+
   tmp="$(mktemp -d)"
   repositories_file="$tmp/repositories.json"
   printf '[]\n' > "$repositories_file"
@@ -111,11 +242,23 @@ collect_live_prs() {
       --state merged \
       --limit "$LIMIT" \
       --json number,title,url,mergedAt,reviewDecision,reviews,headRefOid >"$prs_file" 2>"$tmp/pr-list.err"; then
+      if collect_rest_repo_prs "$repo" "$enriched_file" "$tmp/rest-fallback.err"; then
+        next_file="$tmp/repositories-next.json"
+        jq -c \
+          --arg name "$repo" \
+          --slurpfile pull_requests "$enriched_file" \
+          '. + [{name: $name, pull_requests: $pull_requests[0]}]' \
+          "$repositories_file" > "$next_file"
+        mv "$next_file" "$repositories_file"
+        continue
+      fi
+
       next_file="$tmp/repositories-next.json"
       jq -c \
         --arg name "$repo" \
         --rawfile error "$tmp/pr-list.err" \
-        '. + [{name: $name, pull_requests: [], collection_error: $error}]' \
+        --rawfile rest_error "$tmp/rest-fallback.err" \
+        '. + [{name: $name, pull_requests: [], collection_error: ("GraphQL pr list: " + $error + "REST fallback: " + $rest_error)}]' \
         "$repositories_file" > "$next_file"
       mv "$next_file" "$repositories_file"
       continue

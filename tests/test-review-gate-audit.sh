@@ -444,6 +444,73 @@ SH
     fail "live gh collection did not audit fake merged PR"
 }
 
+test_live_collection_uses_rest_when_graphql_pr_list_is_blocked() {
+  local tmp code
+  tmp="$(mktemp -d)"
+  mkdir -p "$tmp/bin"
+  cat > "$tmp/bin/gh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+  echo "GraphQL: Resource not accessible by personal access token (repository.pullRequests)" >&2
+  exit 1
+fi
+
+if [ "$1" = "api" ]; then
+  case "$*" in
+    *"/repos/huanlongAI/hl-platform/pulls?state=closed"*)
+      cat <<'JSON'
+[
+  {
+    "number": 42,
+    "html_url": "https://github.com/huanlongAI/hl-platform/pull/42",
+    "title": "fix: private repo governance update",
+    "merged_at": "2026-06-04T09:00:00Z",
+    "head": {"sha": "7777777777777777777777777777777777777777"}
+  }
+]
+JSON
+      exit 0
+      ;;
+    *"/repos/huanlongAI/hl-platform/pulls/42/reviews"*)
+      printf '[]\n'
+      exit 0
+      ;;
+    *"/repos/huanlongAI/hl-platform/issues/42/comments"*)
+      printf '[]\n'
+      exit 0
+      ;;
+  esac
+fi
+
+echo "unexpected gh invocation: $*" >&2
+exit 1
+SH
+  chmod +x "$tmp/bin/gh"
+
+  set +e
+  PATH="$tmp/bin:$PATH" \
+    GH_TOKEN="fine-grained-token" \
+    GITHUB_TOKEN="" \
+    REVIEW_GATE_AUDIT_REPOS="hl-platform" \
+    REVIEW_GATE_AUDIT_LIMIT="1" \
+    REVIEW_GATE_AUDIT_OUTPUT="$tmp/result.json" \
+    bash "$SCRIPT" >/dev/null
+  code=$?
+  set -e
+
+  [ "$code" -eq 1 ] || fail "reviewless REST-collected PR should fail audit, got exit $code"
+  jq -e '
+    .checked == 1
+    and (.collection_errors | length) == 0
+    and (.violations | length) == 1
+    and .violations[0].repo == "hl-platform"
+    and .violations[0].number == 42
+  ' "$tmp/result.json" >/dev/null ||
+    fail "live REST collection should audit private repo PRs without GraphQL pullRequests access"
+}
+
 test_live_collection_handles_large_comment_payload_without_arg_limit() {
   local tmp
   tmp="$(mktemp -d)"
@@ -532,6 +599,7 @@ test_merged_since_filters_historical_reviewless_merges
 test_pre_effective_reviewless_merge_is_accounted_as_legacy
 test_post_effective_reviewless_merge_still_fails_audit
 test_live_collection_uses_gh_cli_auth_without_token_env
+test_live_collection_uses_rest_when_graphql_pr_list_is_blocked
 test_live_collection_handles_large_comment_payload_without_arg_limit
 test_workflow_exposes_operational_review_gate_controls
 
