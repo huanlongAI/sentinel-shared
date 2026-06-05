@@ -320,6 +320,12 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
       echo "|---|---:|---|"
       jq -r '.violations[] | "| \(.repo) | [#\(.number)](\(.url)) | \(.reason) |"' "$OUTPUT"
     fi
+    if jq -e '(.collection_errors | length) > 0' "$OUTPUT" >/dev/null; then
+      echo ""
+      echo "| Repo | Collection error |"
+      echo "|---|---|"
+      jq -r '.collection_errors[] | "| \(.repo) | \((.reason // "") | gsub("[\r\n]+"; " ")) |"' "$OUTPUT"
+    fi
   } >> "$GITHUB_STEP_SUMMARY"
 fi
 
@@ -330,4 +336,5 @@ fi
 
 echo "Review gate audit failed"
 jq -r '.violations[]? | "::error::\(.repo)#\(.number) \(.reason)"' "$OUTPUT"
+jq -r '.collection_errors[]? | "::error::\(.repo) collection_error \((.reason // "") | gsub("[\r\n]+"; " "))"' "$OUTPUT"
 exit 1
