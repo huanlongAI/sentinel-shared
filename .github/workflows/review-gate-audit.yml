@@ -50,7 +50,7 @@ jobs:
 
       - name: Audit merged PR review gate evidence
         env:
-          GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
+          GH_TOKEN: ${{ secrets.REVIEW_GATE_AUDIT_TOKEN || secrets.CASCADE_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}
           REVIEW_GATE_AUDIT_REPOS: ${{ inputs.repos || 'hl-platform hl-framework hl-factory hl-dispatch hl-contracts hl-console-native team-memory' }}
           REVIEW_GATE_AUDIT_LIMIT: ${{ inputs.limit || '30' }}
