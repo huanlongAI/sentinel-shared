@@ -42,6 +42,8 @@ assert_file_contains "$WORKFLOW" "bash tests/test-aux-llm-workflows.sh"
 assert_file_contains "$WORKFLOW" "bash tests/test-owner-reviewed-override.sh"
 assert_file_contains "$WORKFLOW" "bash tests/test-review-gate-audit.sh"
 assert_file_contains "$WORKFLOW" "bash tests/test-agent-governance.sh"
+assert_file_contains "$WORKFLOW" "python3 tests/test-github-language-gate.py"
+assert_file_contains "$WORKFLOW" "bash tests/test-github-language-gate-workflow.sh"
 assert_file_contains "$WORKFLOW" "bash tests/test-self-test-workflow.sh"
 assert_file_contains "$WORKFLOW" "bash -n scripts/*.sh tests/*.sh .sentinel/checks/*.sh"
 

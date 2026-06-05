@@ -643,6 +643,16 @@ fi
 echo "Response received (${#RESPONSE_TEXT} chars)"
 echo "Provider diagnostics: provider=${LLM_PROVIDER} model=${LLM_MODEL} transport=${PROVIDER_TRANSPORT:-n/a} http_status=${PROVIDER_HTTP_STATUS:-n/a} auth_header_kind=${PROVIDER_AUTH_HEADER_KIND:-n/a} exit_code=${PROVIDER_EXIT_CODE:-0} attempts=${PROVIDER_ATTEMPTS:-0} duration_seconds=${PROVIDER_DURATION_SECONDS:-0} stdout_bytes=${PROVIDER_STDOUT_BYTES:-0} stderr_bytes=${PROVIDER_STDERR_BYTES:-0} base_url_configured=${PROVIDER_BASE_URL_CONFIGURED:-false} api_url_configured=${PROVIDER_API_URL_CONFIGURED:-false}"
 
+write_review_parse_error() {
+  local reason="$1"
+  if [ -n "${API_RESPONSE_FILE:-}" ] && [ -f "${API_RESPONSE_FILE:-}" ]; then
+    write_provider_error_result "$reason" 0 "${PROVIDER_DURATION_SECONDS:-0}" "$API_RESPONSE_FILE" "${API_ERR_FILE:-/dev/null}"
+  else
+    echo "::error::${reason} — fail closed"
+    write_error_result "$reason"
+  fi
+}
+
 # Extract JSON from response
 REVIEW_JSON=$(echo "$RESPONSE_TEXT" | sed -n '/^{/,/^}/p' || true)
 if [ -z "$REVIEW_JSON" ]; then
@@ -655,20 +665,31 @@ fi
 # Validate JSON and extract verdict
 VERDICT="ESCALATE"
 PASSED=true
-if echo "$REVIEW_JSON" | jq . >/dev/null 2>&1; then
-  VERDICT=$(echo "$REVIEW_JSON" | jq -r '.verdict // "ESCALATE"')
-  SUMMARY=$(echo "$REVIEW_JSON" | jq -r '.summary // "No summary"')
-  echo "LLM verdict: $VERDICT"
-  echo "Summary: $SUMMARY"
-  echo "$REVIEW_JSON" | jq -r '.checks // {} | to_entries[] | "  \(.key): \(.value.verdict) (confidence: \(.value.confidence // "N/A"))"' 2>/dev/null || true
-
-  if [ "$VERDICT" = "FAIL" ] || [ "$VERDICT" = "ESCALATE" ]; then
-    PASSED=false
-  fi
-else
-  echo "::error::Could not parse LLM JSON — fail closed"
-  write_error_result "Could not parse LLM JSON"
+if [ -z "$(printf '%s' "$REVIEW_JSON" | tr -d '[:space:]')" ]; then
+  write_review_parse_error "Could not extract LLM review JSON"
   exit 1
+fi
+if ! printf '%s\n' "$REVIEW_JSON" | jq -e 'type == "object" and length > 0' >/dev/null 2>&1; then
+  write_review_parse_error "Could not parse LLM JSON"
+  exit 1
+fi
+VERDICT=$(printf '%s\n' "$REVIEW_JSON" | jq -r '.verdict // ""')
+case "$VERDICT" in
+  PASS|FAIL|ESCALATE)
+    ;;
+  *)
+    write_review_parse_error "LLM review verdict missing or invalid"
+    exit 1
+    ;;
+esac
+REVIEW_DETAIL_JSON=$(printf '%s\n' "$REVIEW_JSON" | jq .)
+SUMMARY=$(printf '%s\n' "$REVIEW_JSON" | jq -r '.summary // "No summary"')
+echo "LLM verdict: $VERDICT"
+echo "Summary: $SUMMARY"
+printf '%s\n' "$REVIEW_JSON" | jq -r '.checks // {} | to_entries[] | "  \(.key): \(.value.verdict) (confidence: \(.value.confidence // "N/A"))"' 2>/dev/null || true
+
+if [ "$VERDICT" = "FAIL" ] || [ "$VERDICT" = "ESCALATE" ]; then
+  PASSED=false
 fi
 
 # --- Write result ---
@@ -695,7 +716,7 @@ cat > "$RESULT_FILE" <<EOF
   "confidence_threshold": $CONFIDENCE_THRESHOLD,
   "response_length": ${#RESPONSE_TEXT},
   "diff_truncated": $TRUNCATED,
-  "review_detail": $(echo "$REVIEW_JSON" | jq . 2>/dev/null || echo "{}"),
+  "review_detail": $REVIEW_DETAIL_JSON,
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF

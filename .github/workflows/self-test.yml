@@ -51,6 +51,8 @@ jobs:
           bash tests/test-owner-reviewed-override.sh
           bash tests/test-review-gate-audit.sh
           bash tests/test-agent-governance.sh
+          python3 tests/test-github-language-gate.py
+          bash tests/test-github-language-gate-workflow.sh
           bash tests/test-self-test-workflow.sh
 
       - name: Check shell syntax

@@ -121,6 +121,15 @@ dimensions:
         trigger: "AGENTS.md / CLAUDE.md / agent runtime projection 变更"
         phase: 1
 
+      - id: GPC-008
+        name: "GitHub 对外回复语言门禁"
+        severity: P0
+        method: deterministic
+        precheck_id: D-11
+        source: "Founder 2026-06-05 Codex 裁决 / CONSEN-SPEC-001 language gate intent"
+        trigger: "GitHub Issue / issue_comment / gate-generated comment"
+        phase: 1
+
   design_brand:
     id: DBC
     name: "设计与品牌一致性"
@@ -211,6 +220,10 @@ prechecks:
     script: precheck-agent-governance.sh
     check_ids: [GPC-007]
     description: "Agent 治理投影漂移检查"
+  D-11:
+    script: check-github-language-gate.py
+    check_ids: [GPC-008]
+    description: "GitHub Issue / Comment 简体中文语言门禁"
 
 # LLM configuration
 llm:

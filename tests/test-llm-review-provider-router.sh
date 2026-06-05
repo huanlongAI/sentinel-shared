@@ -155,6 +155,9 @@ case "${FAKE_CURL_MODE}" in
   empty)
     write_response 200 ''
     ;;
+  non_json_text)
+    write_response 200 '{"content":[{"type":"text","text":"No blocking findings."}]}'
+    ;;
   http_500)
     write_response 500 '{"error":{"message":"upstream unavailable"}}'
     ;;
@@ -507,6 +510,45 @@ test_heiyucode_provider_empty_output_fails_closed_with_diagnostics() {
   ' "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "Empty output diagnostics mismatch"
 }
 
+test_heiyucode_provider_non_json_review_fails_closed_with_valid_result_json() {
+  local tmp fake_bin calls status
+  tmp="$(mktemp -d)"
+  fake_bin="$tmp/bin"
+  calls="$tmp/calls"
+  mkdir -p "$fake_bin" "$calls"
+  make_repo "$tmp/repo"
+  write_fake_heiyucode_curl "$fake_bin/curl"
+
+  set +e
+  (
+    cd "$tmp/repo"
+    PATH="$fake_bin:$PATH" \
+      FAKE_CALL_DIR="$calls" \
+      FAKE_CURL_MODE="non_json_text" \
+      SENTINEL_LLM_PROVIDER="heiyucode" \
+      HEIYUCODE_AUTH_TOKEN="heiyucode-test-token" \
+      HEIYUCODE_BASE_URL="https://www.heiyucode.com" \
+      HEIYUCODE_MODEL="claude-heiyu-test" \
+      "$ROOT_DIR/scripts/llm-review.sh"
+  )
+  status="$?"
+  set -e
+
+  [ "$status" -ne 0 ] || fail "Non-JSON review text should fail closed"
+  jq -e '
+    .provider == "heiyucode_claude_code"
+    and .transport == "messages-api"
+    and .status == "error"
+    and .error_type == "provider_error"
+    and .reason == "Could not extract LLM review JSON"
+    and .passed == false
+    and .escalate == true
+    and .http_status == "200"
+    and .stdout_bytes > 0
+    and (.response_tail | contains("No blocking findings."))
+  ' "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "Non-JSON review diagnostics mismatch"
+}
+
 test_heiyucode_provider_http_error_fails_closed_with_response_tail() {
   local tmp fake_bin calls status
   tmp="$(mktemp -d)"
@@ -749,6 +791,7 @@ test_heiyucode_provider_hard_fails_explicit_escalate_verdict
 test_heiyucode_provider_timeout_fails_closed_without_waiting_for_job_timeout
 test_heiyucode_provider_nonzero_exit_fails_closed_with_diagnostics
 test_heiyucode_provider_empty_output_fails_closed_with_diagnostics
+test_heiyucode_provider_non_json_review_fails_closed_with_valid_result_json
 test_heiyucode_provider_http_error_fails_closed_with_response_tail
 test_heiyucode_provider_retries_retryable_524_once
 test_heiyucode_provider_retries_x_api_key_after_bearer_auth_failure
