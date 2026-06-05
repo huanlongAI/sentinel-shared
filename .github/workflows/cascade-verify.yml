@@ -118,7 +118,7 @@ jobs:
       - name: Collect downstream results
         id: results
         env:
-          GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
+          GH_TOKEN: ${{ secrets.CASCADE_RESULTS_TOKEN || secrets.CASCADE_TOKEN }}
         run: |
           CASCADE_WAIT_TIMEOUT_SECONDS="${CASCADE_WAIT_TIMEOUT_SECONDS:-900}"
           CASCADE_POLL_INTERVAL_SECONDS="${CASCADE_POLL_INTERVAL_SECONDS:-20}"
@@ -208,7 +208,7 @@ jobs:
       - name: Create issue if failures detected
         if: always() && (steps.results.outputs.fail != '0' || steps.results.outputs.skip != '0' || needs.fan-out.outputs.failed != '')
         env:
-          GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           BODY=$(cat /tmp/cascade-summary.md)
           ISSUE_HTTP_STATUS=$(curl -sS -o /tmp/cascade-issue-response.json -w "%{http_code}" -X POST \
@@ -222,6 +222,12 @@ jobs:
 
           if [ "$ISSUE_HTTP_STATUS" != "201" ]; then
             echo "::error::Cascade failure issue creation failed: HTTP ${ISSUE_HTTP_STATUS}"
+            cat /tmp/cascade-issue-response.json
+            exit 1
+          fi
+
+          if ! jq -e '.labels[]? | select(.name == "cascade-failure")' /tmp/cascade-issue-response.json >/dev/null; then
+            echo "::error::Cascade failure issue was created without cascade-failure label"
             cat /tmp/cascade-issue-response.json
             exit 1
           fi
