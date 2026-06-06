@@ -733,6 +733,74 @@ SH
     "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "Large prompt result metadata mismatch"
 }
 
+test_large_rulings_anchor_extracts_referenced_ruling_sections() {
+  local tmp fake_bin calls prompt
+  tmp="$(mktemp -d)"
+  fake_bin="$tmp/bin"
+  calls="$tmp/calls"
+  mkdir -p "$fake_bin" "$calls"
+  make_repo "$tmp/repo"
+
+  cat >> "$tmp/repo/.sentinel/config.yaml" <<'YAML'
+anchor_files:
+  rulings: "RULINGS.md"
+YAML
+  {
+    printf 'RULINGS HEADER\n'
+    head -c 62000 /dev/zero | tr '\0' 'x'
+    printf '\n\n### R-0123｜NODE-D Test Ruling\n\n'
+    printf 'R-0123 source excerpt required for GPC-003.\n'
+    printf 'This exact R-0123 line must be loaded from the large RULINGS.md anchor.\n\n'
+    printf '### R-0124｜Unreferenced Ruling\n\n'
+    printf 'This unreferenced R-0124 line should not be loaded.\n'
+  } > "$tmp/repo/RULINGS.md"
+  git -C "$tmp/repo" add .sentinel/config.yaml RULINGS.md
+  git -C "$tmp/repo" commit -q -m "add large rulings"
+
+  cat > "$tmp/repo/contract.json" <<'JSON'
+{"ref":"RULINGS.md#R-0123","status":"request_only"}
+JSON
+  git -C "$tmp/repo" add contract.json
+  git -C "$tmp/repo" commit -q -m "reference ruling"
+
+  cat > "$fake_bin/curl" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --data-binary)
+      body="${2#@}"
+      cp "$body" "$FAKE_CALL_DIR/request.json"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+cat <<'JSON'
+{"content":[{"text":"{\"verdict\":\"PASS\",\"checks\":{\"GPC-003\":{\"verdict\":\"PASS\",\"confidence\":0.95,\"reason\":\"ok\"}},\"summary\":\"ok\"}"}]}
+JSON
+SH
+  chmod +x "$fake_bin/curl"
+
+  (
+    cd "$tmp/repo"
+    PATH="$fake_bin:$PATH" \
+      FAKE_CALL_DIR="$calls" \
+      SENTINEL_LLM_PROVIDER="anthropic" \
+      ANTHROPIC_API_KEY="anthropic-test-key" \
+      "$ROOT_DIR/scripts/llm-review.sh"
+  )
+
+  prompt="$(jq -r '.messages[0].content' "$calls/request.json")"
+  assert_contains "$prompt" "R-0123 source excerpt required for GPC-003."
+  assert_contains "$prompt" "This exact R-0123 line must be loaded from the large RULINGS.md anchor."
+  if [[ "$prompt" == *"This unreferenced R-0124 line should not be loaded."* ]]; then
+    fail "Unreferenced RULINGS section should not be loaded into the LLM context pack"
+  fi
+}
+
 test_aggregate_includes_llm_review_failure() {
   local tmp output code
   tmp="$(mktemp -d)"
@@ -783,6 +851,7 @@ test_workflow_requires_llm_result_when_llm_enabled() {
 test_anthropic_provider_uses_messages_api
 test_request_body_uses_file_backed_payload_for_anthropic
 test_large_prompt_uses_file_backed_payload_without_arg_list_overflow
+test_large_rulings_anchor_extracts_referenced_ruling_sections
 test_heiyucode_provider_uses_messages_api
 test_heiyucode_provider_hard_fails_explicit_fail_verdict
 test_anthropic_api_error_fails_closed

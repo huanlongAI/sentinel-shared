@@ -127,6 +127,62 @@ file_size_bytes() {
   fi
 }
 
+referenced_ruling_ids_from_diff() {
+  printf '%s\n' "$DIFF_CONTENT" | { grep -Eo 'R-[0-9]{4}' || true; } | sort -u
+}
+
+is_rulings_anchor_file() {
+  local file="$1"
+  [ "$(basename "$file")" = "RULINGS.md" ]
+}
+
+extract_single_ruling_section() {
+  local file="$1" ruling_id="$2"
+  awk -v ruling_id="$ruling_id" '
+    $0 ~ "^###[[:space:]]+" ruling_id "([^0-9]|$)" {
+      in_section=1
+    }
+    in_section && $0 ~ "^###[[:space:]]+R-[0-9]{4}" && $0 !~ "^###[[:space:]]+" ruling_id "([^0-9]|$)" {
+      exit
+    }
+    in_section {
+      print
+    }
+  ' "$file" 2>/dev/null || true
+}
+
+extract_referenced_rulings_context() {
+  local file="$1" ids="$2"
+  local max_chars="${RULINGS_EXCERPT_MAX_CHARS:-50000}"
+  local context="" id section proposed
+
+  while IFS= read -r id; do
+    [ -z "$id" ] && continue
+    section="$(extract_single_ruling_section "$file" "$id")"
+    [ -z "$section" ] && continue
+
+    proposed="${context}
+--- ${file}#${id} ---
+${section}
+"
+    if [ "${#proposed}" -gt "$max_chars" ]; then
+      if [ -z "$context" ]; then
+        context="${proposed:0:$max_chars}
+...[TRUNCATED rulings excerpt at ${max_chars} chars]
+"
+      else
+        context="${context}
+...[TRUNCATED rulings excerpt before ${id}; max ${max_chars} chars]
+"
+      fi
+      break
+    fi
+    context="$proposed"
+  done <<< "$ids"
+
+  printf '%s' "$context"
+}
+
 safe_stderr_tail() {
   local file="$1"
   if [ ! -s "$file" ]; then
@@ -388,6 +444,16 @@ if [ -n "$ANCHOR_KV" ]; then
 $(cat "$file_path")
 "
         echo "  Loaded: $file_path (${FILE_SIZE}B)"
+      elif is_rulings_anchor_file "$file_path"; then
+        RULING_IDS="$(referenced_ruling_ids_from_diff)"
+        RULINGS_CONTEXT="$(extract_referenced_rulings_context "$file_path" "$RULING_IDS")"
+        if [ -n "$RULINGS_CONTEXT" ]; then
+          CONTEXT_PACK="${CONTEXT_PACK}
+${RULINGS_CONTEXT}"
+          echo "  Extracted: $file_path refs=[$(printf '%s' "$RULING_IDS" | tr '\n' ' ' | sed 's/[[:space:]]*$//')] from large anchor (${FILE_SIZE}B)"
+        else
+          echo "  Skipped: $file_path (too large: ${FILE_SIZE}B; no referenced Ruling sections found)"
+        fi
       else
         echo "  Skipped: $file_path (too large: ${FILE_SIZE}B)"
       fi
