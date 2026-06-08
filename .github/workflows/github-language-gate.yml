@@ -1,4 +1,4 @@
-name: GitHub Language Gate
+name: GitHub Issue / Comment Gate
 
 on:
   workflow_call:
@@ -25,7 +25,7 @@ jobs:
           path: .sentinel-shared
           token: ${{ github.token }}
 
-      - name: Check GitHub issue/comment Chinese language
+      - name: Check GitHub issue/comment language and AI output contract
         id: language_gate
         continue-on-error: true
         run: |
@@ -34,7 +34,7 @@ jobs:
             --enforcement-mode "${{ inputs.enforcement_mode }}" \
             --github-output "$GITHUB_OUTPUT"
 
-      - name: Report Chinese language gate violation
+      - name: Report GitHub issue/comment gate violation
         if: inputs.report_comment && steps.language_gate.outputs.status != 'passed' && steps.language_gate.outputs.target_issue_number != ''
         env:
           GH_TOKEN: ${{ github.token }}
@@ -45,7 +45,7 @@ jobs:
           ISSUE_NUMBER: ${{ steps.language_gate.outputs.target_issue_number }}
         run: |
           cat > "$RUNNER_TEMP/github-language-gate-comment.md" <<EOF
-          ## 中文门禁未通过
+          ## GitHub Issue / Comment 门禁未通过
 
           检测目标：$GATE_TARGET_URL
 
@@ -54,9 +54,11 @@ jobs:
           错误码：$GATE_ERRORS$GATE_WARNINGS
 
           请将 Issue（事项）标题、正文或评论补充简体中文说明后重新编辑。英文术语、命令、路径、字段名和日志可以保留，但不能提交纯英文内容。
+
+          如果评论使用 `<!-- ai-output:v1 -->`，请补齐类型、结论、依据、当前状态、下一步唯一动作、需要人处理、不确定项，并确保判断词带证据。
           EOF
           gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/github-language-gate-comment.md"
 
-      - name: Fail Chinese language gate
+      - name: Fail GitHub issue/comment gate
         if: steps.language_gate.outcome == 'failure'
         run: exit 1

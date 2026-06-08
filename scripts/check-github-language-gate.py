@@ -21,6 +21,44 @@ OWNER_CONFIRMATION_ROOTS = (
     "frontend_owner_confirmation:",
 )
 INTERNAL_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
+AI_OUTPUT_MARKER = "<!-- ai-output:v1 -->"
+AI_OUTPUT_FIELD_RE = re.compile(r"^【([^】]+)】\s*(.*)$")
+AI_OUTPUT_REQUIRED_FIELDS = (
+    "类型",
+    "结论",
+    "依据",
+    "当前状态",
+    "下一步唯一动作",
+    "需要人处理",
+    "不确定项",
+)
+AI_OUTPUT_ALLOWED_TYPES = {
+    "status_update",
+    "gap_report",
+    "decision_request",
+    "acceptance_report",
+}
+AI_OUTPUT_EVIDENCE_TERMS = (
+    "已完成",
+    "已确认",
+    "已授权",
+    "已阻塞",
+    "已通过",
+    "可关闭",
+    "runtime ready",
+    "production ready",
+)
+AI_OUTPUT_EMPTY_EVIDENCE = {
+    "",
+    "无",
+    "none",
+    "n/a",
+    "na",
+    "no evidence",
+    "无证据",
+    "未提供",
+    "待补",
+}
 
 
 def has_chinese(text):
@@ -45,6 +83,69 @@ def chinese_signal_too_weak(text):
 def is_structured_owner_yaml(text):
     stripped = (text or "").lstrip()
     return any(stripped.startswith(root) for root in OWNER_CONFIRMATION_ROOTS)
+
+
+def parse_ai_output_fields(text):
+    fields = {}
+    current_key = None
+
+    for line in (text or "").splitlines():
+        match = AI_OUTPUT_FIELD_RE.match(line.strip())
+        if match:
+            current_key = match.group(1).strip()
+            fields[current_key] = match.group(2).strip()
+            continue
+
+        if current_key:
+            value = line.strip()
+            if value:
+                existing = fields.get(current_key, "")
+                fields[current_key] = f"{existing}\n{value}".strip()
+
+    return fields
+
+
+def ai_output_type(fields):
+    raw_type = fields.get("类型", "").strip().lower()
+    for allowed_type in AI_OUTPUT_ALLOWED_TYPES:
+        if allowed_type in raw_type:
+            return allowed_type
+    return ""
+
+
+def has_evidence_for_ai_output(fields):
+    evidence = fields.get("依据", "").strip()
+    normalized = evidence.lower()
+    if normalized in AI_OUTPUT_EMPTY_EVIDENCE:
+        return False
+
+    return bool(evidence)
+
+
+def validate_ai_output_contract(text):
+    if AI_OUTPUT_MARKER not in (text or ""):
+        return []
+
+    violations = []
+    fields = parse_ai_output_fields(text)
+
+    for required_field in AI_OUTPUT_REQUIRED_FIELDS:
+        if required_field not in fields:
+            violations.append(f"ai_output_missing_{required_field}")
+
+    output_type = ai_output_type(fields)
+    if not output_type:
+        violations.append("ai_output_invalid_type")
+
+    if "NEEDS_CONTEXT" in (text or "") and output_type != "gap_report":
+        violations.append("ai_output_needs_context_requires_gap_report")
+
+    normalized_text = (text or "").lower()
+    if any(term in normalized_text for term in AI_OUTPUT_EVIDENCE_TERMS):
+        if not has_evidence_for_ai_output(fields):
+            violations.append("ai_output_evidence_required")
+
+    return violations
 
 
 def actor_scope(event, target):
@@ -89,6 +190,7 @@ def validate_comment(comment):
         errors.append("comment_missing_chinese")
     elif not structured_yaml_allowed and chinese_signal_too_weak(body):
         errors.append("comment_chinese_ratio_too_low")
+    errors.extend(validate_ai_output_contract(body))
 
     return {
         "kind": "issue_comment",
