@@ -25,7 +25,7 @@ assert_file_not_contains() {
 
 [ -f "$WORKFLOW" ] || fail "GitHub language gate reusable workflow is missing"
 
-assert_file_contains "$WORKFLOW" "name: GitHub Language Gate"
+assert_file_contains "$WORKFLOW" "name: GitHub Issue / Comment Gate"
 assert_file_contains "$WORKFLOW" "workflow_call:"
 assert_file_contains "$WORKFLOW" "enforcement_mode:"
 assert_file_contains "$WORKFLOW" "default: audit"
@@ -36,7 +36,8 @@ assert_file_contains "$WORKFLOW" "path: .sentinel-shared"
 assert_file_contains "$WORKFLOW" "scripts/check-github-language-gate.py"
 assert_file_contains "$WORKFLOW" "--enforcement-mode"
 assert_file_contains "$WORKFLOW" "--github-output"
-assert_file_contains "$WORKFLOW" "中文门禁未通过"
+assert_file_contains "$WORKFLOW" "GitHub Issue / Comment 门禁未通过"
+assert_file_contains "$WORKFLOW" "ai-output:v1"
 assert_file_contains "$WORKFLOW" "gh issue comment"
 assert_file_contains "$WORKFLOW" "inputs.report_comment"
 assert_file_not_contains "$WORKFLOW" "permissions:"
