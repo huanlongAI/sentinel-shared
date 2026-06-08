@@ -801,6 +801,76 @@ SH
   fi
 }
 
+test_large_rulings_anchor_extracts_three_digit_ruling_sections() {
+  local tmp fake_bin calls prompt
+  tmp="$(mktemp -d)"
+  fake_bin="$tmp/bin"
+  calls="$tmp/calls"
+  mkdir -p "$fake_bin" "$calls"
+  make_repo "$tmp/repo"
+
+  cat >> "$tmp/repo/.sentinel/config.yaml" <<'YAML'
+anchor_files:
+  governance_rulings: "governance/RULINGS.md"
+YAML
+  mkdir -p "$tmp/repo/governance"
+  {
+    printf 'RULINGS HEADER\n'
+    head -c 62000 /dev/zero | tr '\0' 'x'
+    printf '\n\n## R-077 biz.sales.order PM Cap-Spec candidate-only Draft PR authorization readback\n\n'
+    printf 'R-077 source excerpt required for GPC-003.\n'
+    printf 'This exact R-077 line must be loaded from the large governance/RULINGS.md anchor.\n\n'
+    printf '## R-078 Unreferenced Ruling\n\n'
+    printf 'This unreferenced R-078 line should not be loaded.\n'
+  } > "$tmp/repo/governance/RULINGS.md"
+  git -C "$tmp/repo" add .sentinel/config.yaml governance/RULINGS.md
+  git -C "$tmp/repo" commit -q -m "add large governance rulings"
+
+  cat > "$tmp/repo/traceability.yaml" <<'YAML'
+source_rulings:
+  - governance/RULINGS.md#R-077
+YAML
+  git -C "$tmp/repo" add traceability.yaml
+  git -C "$tmp/repo" commit -q -m "reference R-077"
+
+  cat > "$fake_bin/curl" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --data-binary)
+      body="${2#@}"
+      cp "$body" "$FAKE_CALL_DIR/request.json"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+cat <<'JSON'
+{"content":[{"text":"{\"verdict\":\"PASS\",\"checks\":{\"GPC-003\":{\"verdict\":\"PASS\",\"confidence\":0.95,\"reason\":\"ok\"}},\"summary\":\"ok\"}"}]}
+JSON
+SH
+  chmod +x "$fake_bin/curl"
+
+  (
+    cd "$tmp/repo"
+    PATH="$fake_bin:$PATH" \
+      FAKE_CALL_DIR="$calls" \
+      SENTINEL_LLM_PROVIDER="anthropic" \
+      ANTHROPIC_API_KEY="anthropic-test-key" \
+      "$ROOT_DIR/scripts/llm-review.sh"
+  )
+
+  prompt="$(jq -r '.messages[0].content' "$calls/request.json")"
+  assert_contains "$prompt" "R-077 source excerpt required for GPC-003."
+  assert_contains "$prompt" "This exact R-077 line must be loaded from the large governance/RULINGS.md anchor."
+  if [[ "$prompt" == *"This unreferenced R-078 line should not be loaded."* ]]; then
+    fail "Unreferenced three-digit RULINGS section should not be loaded into the LLM context pack"
+  fi
+}
+
 test_aggregate_includes_llm_review_failure() {
   local tmp output code
   tmp="$(mktemp -d)"
@@ -852,6 +922,7 @@ test_anthropic_provider_uses_messages_api
 test_request_body_uses_file_backed_payload_for_anthropic
 test_large_prompt_uses_file_backed_payload_without_arg_list_overflow
 test_large_rulings_anchor_extracts_referenced_ruling_sections
+test_large_rulings_anchor_extracts_three_digit_ruling_sections
 test_heiyucode_provider_uses_messages_api
 test_heiyucode_provider_hard_fails_explicit_fail_verdict
 test_anthropic_api_error_fails_closed

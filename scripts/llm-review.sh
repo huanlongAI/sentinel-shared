@@ -128,7 +128,7 @@ file_size_bytes() {
 }
 
 referenced_ruling_ids_from_diff() {
-  printf '%s\n' "$DIFF_CONTENT" | { grep -Eo 'R-[0-9]{4}' || true; } | sort -u
+  printf '%s\n' "$DIFF_CONTENT" | { grep -Eo 'R-[0-9]{3,}([.][A-Za-z0-9]+)?' || true; } | sort -u
 }
 
 is_rulings_anchor_file() {
@@ -139,10 +139,16 @@ is_rulings_anchor_file() {
 extract_single_ruling_section() {
   local file="$1" ruling_id="$2"
   awk -v ruling_id="$ruling_id" '
-    $0 ~ "^###[[:space:]]+" ruling_id "([^0-9]|$)" {
+    BEGIN {
+      escaped_ruling_id = ruling_id
+      gsub(/[.]/, "[.]", escaped_ruling_id)
+      heading_pattern = "^##+[[:space:]]+" escaped_ruling_id "([^0-9A-Za-z.]|$)"
+      next_ruling_pattern = "^##+[[:space:]]+R-[0-9][0-9][0-9][0-9]*([.][A-Za-z0-9]+)?([^0-9A-Za-z.]|$)"
+    }
+    $0 ~ heading_pattern {
       in_section=1
     }
-    in_section && $0 ~ "^###[[:space:]]+R-[0-9]{4}" && $0 !~ "^###[[:space:]]+" ruling_id "([^0-9]|$)" {
+    in_section && $0 ~ next_ruling_pattern && $0 !~ heading_pattern {
       exit
     }
     in_section {
