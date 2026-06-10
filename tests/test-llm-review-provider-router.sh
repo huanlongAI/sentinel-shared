@@ -871,6 +871,76 @@ SH
   fi
 }
 
+test_large_rulings_anchor_loads_overview_when_no_ruling_ids_are_referenced() {
+  local tmp fake_bin calls prompt
+  tmp="$(mktemp -d)"
+  fake_bin="$tmp/bin"
+  calls="$tmp/calls"
+  mkdir -p "$fake_bin" "$calls"
+  make_repo "$tmp/repo"
+
+  cat >> "$tmp/repo/.sentinel/config.yaml" <<'YAML'
+anchor_files:
+  rulings: "RULINGS.md"
+YAML
+  {
+    printf '# RULINGS.md test register\n'
+    printf 'RULINGS root protocol must be visible even when no direct R-id appears in the diff.\n'
+    head -c 62000 /dev/zero | tr '\0' 'x'
+    printf '\n\n### R-0123｜Repo governance boundary\n\n'
+    printf 'R-0123 full body should not be loaded without a direct reference.\n\n'
+    printf '### R-0124｜Push authorization boundary\n\n'
+    printf 'R-0124 full body should not be loaded without a direct reference.\n'
+  } > "$tmp/repo/RULINGS.md"
+  git -C "$tmp/repo" add .sentinel/config.yaml RULINGS.md
+  git -C "$tmp/repo" commit -q -m "add large rulings"
+
+  cat > "$tmp/repo/repo-governance.md" <<'EOF'
+Repo sync governance packet without direct ruling id.
+EOF
+  git -C "$tmp/repo" add repo-governance.md
+  git -C "$tmp/repo" commit -q -m "add repo governance packet"
+
+  cat > "$fake_bin/curl" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --data-binary)
+      body="${2#@}"
+      cp "$body" "$FAKE_CALL_DIR/request.json"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+cat <<'JSON'
+{"content":[{"text":"{\"verdict\":\"PASS\",\"checks\":{\"GPC-003\":{\"verdict\":\"PASS\",\"confidence\":0.95,\"reason\":\"ok\"}},\"summary\":\"ok\"}"}]}
+JSON
+SH
+  chmod +x "$fake_bin/curl"
+
+  (
+    cd "$tmp/repo"
+    PATH="$fake_bin:$PATH" \
+      FAKE_CALL_DIR="$calls" \
+      SENTINEL_LLM_PROVIDER="anthropic" \
+      ANTHROPIC_API_KEY="anthropic-test-key" \
+      "$ROOT_DIR/scripts/llm-review.sh"
+  )
+
+  prompt="$(jq -r '.messages[0].content' "$calls/request.json")"
+  assert_contains "$prompt" "--- RULINGS.md overview ---"
+  assert_contains "$prompt" "RULINGS root protocol must be visible even when no direct R-id appears in the diff."
+  assert_contains "$prompt" "### R-0123｜Repo governance boundary"
+  assert_contains "$prompt" "### R-0124｜Push authorization boundary"
+  if [[ "$prompt" == *"R-0123 full body should not be loaded without a direct reference."* ]]; then
+    fail "Large RULINGS overview should include headings, not full unreferenced ruling bodies"
+  fi
+}
+
 test_aggregate_includes_llm_review_failure() {
   local tmp output code
   tmp="$(mktemp -d)"
@@ -923,6 +993,7 @@ test_request_body_uses_file_backed_payload_for_anthropic
 test_large_prompt_uses_file_backed_payload_without_arg_list_overflow
 test_large_rulings_anchor_extracts_referenced_ruling_sections
 test_large_rulings_anchor_extracts_three_digit_ruling_sections
+test_large_rulings_anchor_loads_overview_when_no_ruling_ids_are_referenced
 test_heiyucode_provider_uses_messages_api
 test_heiyucode_provider_hard_fails_explicit_fail_verdict
 test_anthropic_api_error_fails_closed

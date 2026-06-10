@@ -189,6 +189,48 @@ ${section}
   printf '%s' "$context"
 }
 
+extract_rulings_overview_context() {
+  local file="$1"
+  local max_chars="${RULINGS_OVERVIEW_MAX_CHARS:-50000}"
+  local header_max_chars="${RULINGS_OVERVIEW_HEADER_MAX_CHARS:-4000}"
+  local header headings context
+
+  header="$(
+    awk '
+      /^##+[[:space:]]+R-[0-9][0-9][0-9][0-9]*([.][A-Za-z0-9]+)?([^0-9A-Za-z.]|$)/ { exit }
+      { print }
+    ' "$file" 2>/dev/null || true
+  )"
+  if [ "${#header}" -gt "$header_max_chars" ]; then
+    header="${header:0:$header_max_chars}
+...[TRUNCATED RULINGS prologue at ${header_max_chars} chars]"
+  fi
+
+  headings="$(
+    awk '
+      /^##+[[:space:]]+R-[0-9][0-9][0-9][0-9]*([.][A-Za-z0-9]+)?([^0-9A-Za-z.]|$)/ { print }
+    ' "$file" 2>/dev/null || true
+  )"
+
+  context="--- ${file} overview ---
+Large RULINGS anchor loaded as bounded overview because no direct R-id was found in the diff.
+This overview provides the RULINGS prologue and ruling heading index. It does not replace exact ruling excerpts; if a specific R-id is referenced, Sentinel loads that section body separately.
+
+## RULINGS prologue
+${header}
+
+## Ruling heading index
+${headings}
+"
+
+  if [ "${#context}" -gt "$max_chars" ]; then
+    context="${context:0:$max_chars}
+...[TRUNCATED RULINGS overview at ${max_chars} chars]"
+  fi
+
+  printf '%s' "$context"
+}
+
 safe_stderr_tail() {
   local file="$1"
   if [ ! -s "$file" ]; then
@@ -458,7 +500,14 @@ $(cat "$file_path")
 ${RULINGS_CONTEXT}"
           echo "  Extracted: $file_path refs=[$(printf '%s' "$RULING_IDS" | tr '\n' ' ' | sed 's/[[:space:]]*$//')] from large anchor (${FILE_SIZE}B)"
         else
-          echo "  Skipped: $file_path (too large: ${FILE_SIZE}B; no referenced Ruling sections found)"
+          RULINGS_CONTEXT="$(extract_rulings_overview_context "$file_path")"
+          if [ -n "$RULINGS_CONTEXT" ]; then
+            CONTEXT_PACK="${CONTEXT_PACK}
+${RULINGS_CONTEXT}"
+            echo "  Overview: $file_path no direct R-id refs; loaded bounded RULINGS overview (${FILE_SIZE}B)"
+          else
+            echo "  Skipped: $file_path (too large: ${FILE_SIZE}B; no referenced Ruling sections found)"
+          fi
         fi
       else
         echo "  Skipped: $file_path (too large: ${FILE_SIZE}B)"
