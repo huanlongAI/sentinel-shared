@@ -774,6 +774,57 @@ write_review_parse_error() {
   fi
 }
 
+recover_malformed_review_json() {
+  local checks_file
+  checks_file="$(mktemp)"
+  printf '%s\n' "$LLM_CHECKS" > "$checks_file"
+  printf '%s\n' "$REVIEW_JSON" | python3 -c '
+import json
+import re
+import sys
+
+checks_path = sys.argv[1]
+text = sys.stdin.read()
+check_ids = [line.strip() for line in open(checks_path, encoding="utf-8") if line.strip()]
+
+verdict_values = re.findall(r"\"verdict\"\s*:\s*\"(PASS|FAIL|ESCALATE)\"", text)
+if not verdict_values:
+    sys.exit(1)
+
+top_verdict = verdict_values[0]
+effective_verdict = top_verdict
+if "FAIL" in verdict_values:
+    effective_verdict = "FAIL"
+elif "ESCALATE" in verdict_values:
+    effective_verdict = "ESCALATE"
+
+checks = {}
+for check_id in check_ids:
+    marker = f"\"{check_id}\""
+    idx = text.find(marker)
+    if idx < 0:
+        sys.exit(1)
+    window = text[idx:idx + 2000]
+    verdict_match = re.search(r"\"verdict\"\s*:\s*\"(PASS|FAIL|ESCALATE)\"", window)
+    if not verdict_match:
+        sys.exit(1)
+    confidence_match = re.search(r"\"confidence\"\s*:\s*([0-9]+(?:\.[0-9]+)?)", window)
+    confidence = float(confidence_match.group(1)) if confidence_match else None
+    checks[check_id] = {
+        "verdict": verdict_match.group(1),
+        "confidence": confidence,
+        "reason": "Recovered from malformed LLM JSON; original reason omitted because provider returned invalid JSON string escaping."
+    }
+
+print(json.dumps({
+    "verdict": effective_verdict,
+    "checks": checks,
+    "summary": "Recovered verdict from malformed LLM JSON; provider response contained JSON-like output with invalid string escaping."
+}, ensure_ascii=False))
+' "$checks_file"
+  rm -f "$checks_file"
+}
+
 # Extract JSON from response
 REVIEW_JSON=$(echo "$RESPONSE_TEXT" | sed -n '/^{/,/^}/p' || true)
 if [ -z "$REVIEW_JSON" ]; then
@@ -791,8 +842,14 @@ if [ -z "$(printf '%s' "$REVIEW_JSON" | tr -d '[:space:]')" ]; then
   exit 1
 fi
 if ! printf '%s\n' "$REVIEW_JSON" | jq -e 'type == "object" and length > 0' >/dev/null 2>&1; then
-  write_review_parse_error "Could not parse LLM JSON"
-  exit 1
+  RECOVERED_REVIEW_JSON="$(recover_malformed_review_json || true)"
+  if [ -z "$(printf '%s' "$RECOVERED_REVIEW_JSON" | tr -d '[:space:]')" ] \
+    || ! printf '%s\n' "$RECOVERED_REVIEW_JSON" | jq -e 'type == "object" and length > 0' >/dev/null 2>&1; then
+    write_review_parse_error "Could not parse LLM JSON"
+    exit 1
+  fi
+  echo "::warning::Recovered LLM review verdict from malformed JSON string escaping"
+  REVIEW_JSON="$RECOVERED_REVIEW_JSON"
 fi
 VERDICT=$(printf '%s\n' "$REVIEW_JSON" | jq -r '.verdict // ""')
 case "$VERDICT" in
