@@ -135,6 +135,13 @@ write_response() {
   printf 'http_status=%s\ntime_total=0.01\nsize_download=%s\n' "$status" "$(wc -c < "$out" | tr -d ' ')"
 }
 
+write_text_response() {
+  local status="$1"
+  local text="$2"
+  jq -n --arg text "$text" '{content:[{type:"text",text:$text}]}' > "$out"
+  printf 'http_status=%s\ntime_total=0.01\nsize_download=%s\n' "$status" "$(wc -c < "$out" | tr -d ' ')"
+}
+
 case "${FAKE_CURL_MODE}" in
   pass)
     write_response 200 '{"content":[{"type":"text","text":"{\"verdict\":\"PASS\",\"checks\":{\"GPC-003\":{\"verdict\":\"PASS\",\"confidence\":0.96,\"reason\":\"ok\"}},\"summary\":\"ok\"}"}]}'
@@ -157,6 +164,25 @@ case "${FAKE_CURL_MODE}" in
     ;;
   non_json_text)
     write_response 200 '{"content":[{"type":"text","text":"No blocking findings."}]}'
+    ;;
+  malformed_fenced_pass)
+    text=$(cat <<'EOF'
+```json
+{
+  "verdict": "PASS",
+  "checks": {
+    "GPC-003": {
+      "verdict": "PASS",
+      "confidence": 0.91,
+      "reason": "review copied a "quoted governance phrase" without escaping it"
+    }
+  },
+  "summary": "semantic pass"
+}
+```
+EOF
+)
+    write_text_response 200 "$text"
     ;;
   http_500)
     write_response 500 '{"error":{"message":"upstream unavailable"}}'
@@ -547,6 +573,37 @@ test_heiyucode_provider_non_json_review_fails_closed_with_valid_result_json() {
     and .stdout_bytes > 0
     and (.response_tail | contains("No blocking findings."))
   ' "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "Non-JSON review diagnostics mismatch"
+}
+
+test_heiyucode_provider_recovers_malformed_fenced_pass_json() {
+  local tmp fake_bin calls
+  tmp="$(mktemp -d)"
+  fake_bin="$tmp/bin"
+  calls="$tmp/calls"
+  mkdir -p "$fake_bin" "$calls"
+  make_repo "$tmp/repo"
+  write_fake_heiyucode_curl "$fake_bin/curl"
+
+  (
+    cd "$tmp/repo"
+    PATH="$fake_bin:$PATH" \
+      FAKE_CALL_DIR="$calls" \
+      FAKE_CURL_MODE="malformed_fenced_pass" \
+      SENTINEL_LLM_PROVIDER="heiyucode" \
+      HEIYUCODE_AUTH_TOKEN="heiyucode-test-token" \
+      HEIYUCODE_BASE_URL="https://www.heiyucode.com" \
+      HEIYUCODE_MODEL="claude-heiyu-test" \
+      "$ROOT_DIR/scripts/llm-review.sh"
+  )
+
+  jq -e '
+    .provider == "heiyucode_claude_code"
+    and .status == "completed"
+    and .verdict == "PASS"
+    and .passed == true
+    and .review_detail.checks["GPC-003"].verdict == "PASS"
+    and (.review_detail.checks["GPC-003"].reason | contains("Recovered from malformed LLM JSON"))
+  ' "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "Malformed fenced PASS JSON should recover safely"
 }
 
 test_heiyucode_provider_http_error_fails_closed_with_response_tail() {
@@ -1003,6 +1060,7 @@ test_heiyucode_provider_timeout_fails_closed_without_waiting_for_job_timeout
 test_heiyucode_provider_nonzero_exit_fails_closed_with_diagnostics
 test_heiyucode_provider_empty_output_fails_closed_with_diagnostics
 test_heiyucode_provider_non_json_review_fails_closed_with_valid_result_json
+test_heiyucode_provider_recovers_malformed_fenced_pass_json
 test_heiyucode_provider_http_error_fails_closed_with_response_tail
 test_heiyucode_provider_retries_retryable_524_once
 test_heiyucode_provider_retries_x_api_key_after_bearer_auth_failure
