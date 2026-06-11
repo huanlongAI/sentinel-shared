@@ -48,6 +48,15 @@ AI_OUTPUT_EVIDENCE_TERMS = (
     "runtime ready",
     "production ready",
 )
+AI_OUTPUT_BLACK_BOX_PHRASES = (
+    "收到 / 已知 / 继续推进",
+    "继续推进整体治理",
+    "需要进一步确认",
+    "当前上下文显示",
+    "可能已经处理过",
+    "runtime 那个",
+    "hprd 已确认但无证据",
+)
 AI_OUTPUT_EMPTY_EVIDENCE = {
     "",
     "无",
@@ -144,6 +153,9 @@ def validate_ai_output_contract(text):
     if any(term in normalized_text for term in AI_OUTPUT_EVIDENCE_TERMS):
         if not has_evidence_for_ai_output(fields):
             violations.append("ai_output_evidence_required")
+
+    if any(phrase in normalized_text for phrase in AI_OUTPUT_BLACK_BOX_PHRASES):
+        violations.append("ai_output_black_box_phrase")
 
     return violations
 

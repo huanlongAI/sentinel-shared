@@ -247,6 +247,31 @@ class GitHubLanguageGateTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertIn("ai_output_invalid_type", payload["errors"])
 
+    def test_rejects_black_box_phrase_even_with_valid_type_and_evidence(self):
+        result = run_gate(
+            {
+                "action": "created",
+                "comment": {
+                    "body": (
+                        "<!-- ai-output:v1 -->\n"
+                        "【类型】status_update\n"
+                        "【结论】继续推进整体治理。\n"
+                        "【依据】PR #110\n"
+                        "【当前状态】doing\n"
+                        "【下一步唯一动作】@xujiuming 在 PR #110 补 integration test。\n"
+                        "【需要人处理】@xujiuming\n"
+                        "【不确定项】无\n"
+                    ),
+                    "html_url": "https://github.com/huanlongAI/hl-dispatch/issues/200#issuecomment-1",
+                    "author_association": "MEMBER",
+                },
+            }
+        )
+
+        self.assertEqual(result.returncode, 1)
+        payload = json.loads(result.stdout)
+        self.assertIn("ai_output_black_box_phrase", payload["errors"])
+
     def test_rejects_needs_context_without_gap_report(self):
         result = run_gate(
             {
