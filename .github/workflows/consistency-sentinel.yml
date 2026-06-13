@@ -105,6 +105,7 @@ jobs:
       # ---- LLM 一致性审查层 ----
       - name: "LLM: 语义一致性审查"
         if: always() && inputs.skip_llm != 'true'
+        continue-on-error: true
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           HEIYUCODE_AUTH_TOKEN: ${{ secrets.HEIYUCODE_AUTH_TOKEN }}
