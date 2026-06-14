@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -45,7 +46,7 @@ def init_repo():
     return tmp, repo
 
 
-def run_gate(repo, mode=None):
+def run_gate(repo, mode=None, extra_env=None):
     results_dir = repo / ".sentinel" / "results"
     command = [
         sys.executable,
@@ -57,7 +58,10 @@ def run_gate(repo, mode=None):
     ]
     if mode:
         command.extend(["--mode", mode])
-    result = subprocess.run(command, cwd=repo, capture_output=True, text=True)
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
+    result = subprocess.run(command, cwd=repo, env=env, capture_output=True, text=True)
     result_file = results_dir / "d12-pr-doc-readability.json"
     payload = json.loads(result_file.read_text(encoding="utf-8")) if result_file.exists() else None
     return result, payload
@@ -78,6 +82,36 @@ class PrDocReadabilityTests(unittest.TestCase):
         self.assertTrue(payload["passed"])
         self.assertTrue(payload["skipped"])
         self.assertEqual(payload["scanned_files"], [])
+
+    def test_falls_back_when_github_base_ref_is_unavailable(self):
+        tmp, repo = init_repo()
+        self.addCleanup(tmp.cleanup)
+        doc = repo / "docs" / "delivery-recovery" / "BASE_REF_FALLBACK.md"
+        doc.parent.mkdir(parents=True)
+        doc.write_text(
+            textwrap.dedent(
+                """\
+                # Base Ref Fallback
+
+                ## 中文摘要
+
+                这个文档验证 GitHub Actions 的 base ref 环境变量不会让临时仓库扫描空结果。
+
+                ## 术语说明
+
+                - base ref：目标基线分支，用于计算 PR diff。
+                """
+            )
+            * 10,
+            encoding="utf-8",
+        )
+        run(["git", "add", "."], repo)
+        run(["git", "commit", "-q", "-m", "add fallback doc"], repo)
+
+        result, payload = run_gate(repo, extra_env={"GITHUB_BASE_REF": "main"})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(doc.relative_to(repo)), payload["scanned_files"])
 
     def test_rejects_added_english_governance_doc_in_enforce_mode(self):
         tmp, repo = init_repo()

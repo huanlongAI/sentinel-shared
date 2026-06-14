@@ -34,6 +34,16 @@ def run_git(args, cwd):
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
 
 
+def ref_points_at_head(ref, cwd):
+    ref_result = run_git(["rev-parse", "--verify", ref], cwd)
+    head_result = run_git(["rev-parse", "--verify", "HEAD"], cwd)
+    return (
+        ref_result.returncode == 0
+        and head_result.returncode == 0
+        and ref_result.stdout.strip() == head_result.stdout.strip()
+    )
+
+
 def repo_root():
     result = run_git(["rev-parse", "--show-toplevel"], Path.cwd())
     if result.returncode == 0:
@@ -228,23 +238,33 @@ def is_allowlisted(path, entries, today):
     return False, None
 
 
-def diff_args(cwd):
+def diff_arg_candidates(cwd):
     base_ref = os.environ.get("BASE_REF") or os.environ.get("GITHUB_BASE_REF")
+    candidates = []
     if base_ref:
-        return [f"origin/{base_ref}...HEAD"]
+        origin_ref = f"origin/{base_ref}"
+        if not ref_points_at_head(origin_ref, cwd):
+            candidates.append([f"{origin_ref}...HEAD"])
+        if not ref_points_at_head(base_ref, cwd):
+            candidates.append([f"{base_ref}...HEAD"])
     result = run_git(["rev-parse", "--verify", "HEAD~1"], cwd)
     if result.returncode == 0:
-        return ["HEAD~1", "HEAD"]
-    return ["--cached"]
+        candidates.append(["HEAD~1", "HEAD"])
+    candidates.append(["--cached"])
+    return candidates
 
 
 def changed_files(cwd):
-    args = diff_args(cwd)
-    name_status = run_git(["diff", "--name-status", "--diff-filter=ACMRT", *args], cwd)
-    numstat = run_git(["diff", "--numstat", "--diff-filter=ACMRT", *args], cwd)
+    name_status = None
+    numstat = None
+    for args in diff_arg_candidates(cwd):
+        name_status = run_git(["diff", "--name-status", "--diff-filter=ACMRT", *args], cwd)
+        numstat = run_git(["diff", "--numstat", "--diff-filter=ACMRT", *args], cwd)
+        if name_status.returncode == 0 and numstat.returncode == 0:
+            break
 
     files = {}
-    if name_status.returncode == 0:
+    if name_status and name_status.returncode == 0:
         for line in name_status.stdout.splitlines():
             parts = line.split("\t")
             if not parts:
@@ -253,7 +273,7 @@ def changed_files(cwd):
             path = parts[-1]
             files[path] = {"path": path, "status": status, "additions": 0}
 
-    if numstat.returncode == 0:
+    if numstat and numstat.returncode == 0:
         for line in numstat.stdout.splitlines():
             parts = line.split("\t")
             if len(parts) < 3:
