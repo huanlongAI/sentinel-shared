@@ -130,6 +130,15 @@ dimensions:
         trigger: "GitHub Issue / issue_comment / gate-generated comment"
         phase: 1
 
+      - id: GPC-009
+        name: "PR 文档中文可读性"
+        severity: P1
+        method: deterministic
+        precheck_id: D-12
+        source: "Founder 2026-06-14 Dahuizi engineering-governance ruling"
+        trigger: "PR / push diff changes docs or deliverables Markdown"
+        phase: 1
+
   design_brand:
     id: DBC
     name: "设计与品牌一致性"
@@ -224,6 +233,10 @@ prechecks:
     script: check-github-language-gate.py
     check_ids: [GPC-008]
     description: "GitHub Issue / Comment 简体中文语言门禁"
+  D-12:
+    script: check-pr-doc-readability.py
+    check_ids: [GPC-009]
+    description: "PR 文档中文可读性检查"
 
 # LLM configuration
 llm:

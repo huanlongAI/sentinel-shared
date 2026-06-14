@@ -102,6 +102,21 @@ jobs:
         if: always() && hashFiles('.sentinel-shared/scripts/precheck-agent-governance.sh') != ''
         run: .sentinel-shared/scripts/precheck-agent-governance.sh
 
+      - name: "D-12: PR 文档中文可读性检查"
+        if: always() && hashFiles('.sentinel-shared/scripts/check-pr-doc-readability.py') != ''
+        run: |
+          set +e
+          python3 .sentinel-shared/scripts/check-pr-doc-readability.py \
+            --config .sentinel/config.yaml \
+            --results-dir "$SENTINEL_RESULTS_DIR" \
+            --summary-file "$SENTINEL_RESULTS_DIR/d12-pr-doc-readability-summary.md"
+          code=$?
+          set -e
+          if [ -f "$SENTINEL_RESULTS_DIR/d12-pr-doc-readability-summary.md" ]; then
+            cat "$SENTINEL_RESULTS_DIR/d12-pr-doc-readability-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$code"
+
       # ---- LLM 一致性审查层 ----
       - name: "LLM: 语义一致性审查"
         if: always() && inputs.skip_llm != 'true'
@@ -123,7 +138,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          REQUIRED_DETERMINISTIC_RESULTS="d1-changelog.json d2-terminology.json d3-cascade.json d4-directory.json d5-capability-source.json d6-brand-token.json d10-agent-governance.json"
+          REQUIRED_DETERMINISTIC_RESULTS="d1-changelog.json d2-terminology.json d3-cascade.json d4-directory.json d5-capability-source.json d6-brand-token.json d10-agent-governance.json d12-pr-doc-readability.json"
           REQUIRED_DETERMINISTIC_RESULT_FILES="$REQUIRED_DETERMINISTIC_RESULTS" .sentinel-shared/scripts/owner-reviewed-override.sh
 
       # ---- 判定聚合 ----
@@ -131,7 +146,7 @@ jobs:
         id: aggregate
         if: always()
         run: |
-          REQUIRED_RESULTS="d1-changelog.json d2-terminology.json d3-cascade.json d4-directory.json d5-capability-source.json d6-brand-token.json d10-agent-governance.json"
+          REQUIRED_RESULTS="d1-changelog.json d2-terminology.json d3-cascade.json d4-directory.json d5-capability-source.json d6-brand-token.json d10-agent-governance.json d12-pr-doc-readability.json"
           if [ "${{ inputs.skip_llm }}" != "true" ]; then
             REQUIRED_RESULTS="$REQUIRED_RESULTS llm-review.json"
           fi

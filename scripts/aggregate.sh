@@ -112,7 +112,14 @@ while IFS= read -r result_file; do
     fi
 
     # Extract issues
-    issues=$(jq -r '([.issues[]?, .violations[]?] + (if (.reason // "") != "" then [.reason] else [] end))[]?' "$result_file" 2>/dev/null || true)
+    issues=$(jq -r '
+      def issue_text:
+        if type == "string" then .
+        elif type == "object" then (.message // ((.path // "unknown") + ": " + (.code // "violation")))
+        else tostring
+        end;
+      (([.issues[]?, .violations[]?] | map(issue_text)) + (if (.reason // "") != "" then [.reason] else [] end))[]?
+    ' "$result_file" 2>/dev/null || true)
     while IFS= read -r issue; do
       [ -z "$issue" ] && continue
       ALL_ISSUES+=("[$check_id] $issue")
@@ -241,7 +248,14 @@ REPORT_FILE="$RESULTS_DIR/sentinel-report.md"
     r_name=$(jq -r '.check_name // (if (.review_id // "") == "llm-review" then "LLM Review" else "?" end)' "$result_file" 2>/dev/null || echo "?")
     r_pass=$(jq -r '.passed // false' "$result_file" 2>/dev/null || echo "false")
     r_verdict=$(jq -r '.verdict // ""' "$result_file" 2>/dev/null || echo "")
-    r_issues=$(jq -r '([.issues[]?, .violations[]?] + (if (.reason // "") != "" then [.reason] else [] end) | join("; ")) // ""' "$result_file" 2>/dev/null || echo "")
+    r_issues=$(jq -r '
+      def issue_text:
+        if type == "string" then .
+        elif type == "object" then (.message // ((.path // "unknown") + ": " + (.code // "violation")))
+        else tostring
+        end;
+      ((([.issues[]?, .violations[]?] | map(issue_text)) + (if (.reason // "") != "" then [.reason] else [] end)) | join("; ")) // ""
+    ' "$result_file" 2>/dev/null || echo "")
     if [ "$r_id" = "llm-review" ] \
       && [ "$r_pass" != "true" ] \
       && [ "$r_verdict" = "ESCALATE" ] \
