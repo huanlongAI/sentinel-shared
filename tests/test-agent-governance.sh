@@ -45,7 +45,7 @@ TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
 MAP_DOC_CONTENT="$(cat "$MAP_DOC")"
-assert_contains "$MAP_DOC_CONTENT" "REPO-MAP.md@v1.4.12"
+assert_contains "$MAP_DOC_CONTENT" "REPO-MAP.md@v1.4.15"
 assert_contains "$MAP_DOC_CONTENT" "不在本文件维护 26 仓逐仓清单"
 assert_contains "$MAP_DOC_CONTENT" "40-PPR/check-deps.sh"
 assert_contains "$MAP_DOC_CONTENT" "hl-app-certificates"

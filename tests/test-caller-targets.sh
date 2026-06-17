@@ -23,8 +23,8 @@ cat > "$REPO_MAP" <<'MAP'
 | 仓库 | 域 | 本地路径 | 角色 | 可见性 | Write-Owner | 治理约束 |
 |------|----|---------|------|--------|-------------|---------|
 | **tzhOS** | _governance | `01_Repos/_governance/tzhOS` | 治理 SSOT | private | NODE-M | 自身即最高治理层 |
-| **ltc-endpoint** | _governance | `01_Repos/_governance/ltc-endpoint` | LTC | private | NODE-M | R-0092 |
-| **sentinel-shared** | _infra | `01_Repos/_infra/sentinel-shared` | Hub | public | NODE-M | tzhOS Sentinel |
+| **ltc-endpoint** | huanlong | `01_Repos/huanlong/ltc-endpoint` | LTC | private | NODE-M | R-0092 |
+| **sentinel-shared** | huanlong | `01_Repos/huanlong/sentinel-shared` | Hub | public | NODE-M | tzhOS Sentinel |
 | **tech-cofounder-bot** | _infra | `01_Repos/_infra/tech-cofounder-bot` | Runtime | private | NODE-M | MAIA |
 | **tzh-context-atlas** | _infra | `01_Repos/_infra/tzh-context-atlas` | Context Atlas | private | NODE-M | tzhOS |
 | **hl-scene-design-system** | huanlong | `01_Repos/huanlong/hl-scene-design-system` | Design system | private | NODE-E | hl-contracts |
