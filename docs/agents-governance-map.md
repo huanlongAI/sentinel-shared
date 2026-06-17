@@ -1,10 +1,10 @@
 # HuanlongAI AGENTS Governance Map
 
 > Status: ACTIVE
-> Last updated: 2026-06-04
+> Last updated: 2026-06-17
 > Owner: NODE-M operational authority; AUM / tzhOS remain governance SSOT
 
-本文件是 `huanlongAI` 工作区的 Agent 入口治理地图，不是新的仓库清单真源，也不是新的规则真源。活跃仓库清单以 tzhOS `40-PPR/REPO-MAP.md@v1.4.12` 为 SSOT；规则真源仍是各 repo 的 `CLAUDE.md`、直接或目录继承的 `AGENTS.md`、tzhOS / AUM registry、仓库 CI gate 与当前任务契约。
+本文件是 `huanlongAI` 工作区的 Agent 入口治理地图，不是新的仓库清单真源，也不是新的规则真源。活跃仓库清单以 tzhOS `40-PPR/REPO-MAP.md@v1.4.15` 为 SSOT；规则真源仍是各 repo 的 `CLAUDE.md`、直接或目录继承的 `AGENTS.md`、tzhOS / AUM registry、仓库 CI gate 与当前任务契约。
 
 ## Principles
 
@@ -19,7 +19,7 @@
 
 | Layer | Owner | Purpose | Verification |
 |-------|-------|---------|--------------|
-| Active repo inventory | tzhOS `40-PPR/REPO-MAP.md@v1.4.12` | 26 active repos, paths, visibility, Write-Owner, repo-level constraints | `bash 40-PPR/check-deps.sh` in tzhOS |
+| Active repo inventory | tzhOS `40-PPR/REPO-MAP.md@v1.4.15` | 26 active repos, paths, visibility, Write-Owner, repo-level constraints | `bash 40-PPR/check-deps.sh` in tzhOS |
 | Entry coverage | tzhOS `40-PPR/check-deps.sh` | Dynamic check that every active repo has a direct or inherited `AGENTS.md` / `CLAUDE.md` entry | tzhOS governance-check / local `check-deps.sh` |
 | Projection drift | sentinel-shared D-10 | Repo-local scan for stale owner/runtime projection and oversized duplicated `AGENTS.md` files | `bash scripts/precheck-agent-governance.sh` from target repo root |
 | Map invariants | sentinel-shared tests | Prevent this map from becoming a second stale repo inventory | `bash tests/test-agent-governance.sh` |
@@ -32,7 +32,7 @@ This table records only exceptions and important entry topology. It is not a ful
 |-------|-------------|--------------|------------|-------|
 | `super-founder` | root `AGENTS.md` thin entry | root `CLAUDE.md` long-form project rules | `CLAUDE.md` + tzhOS R-0122 / AUM | Root `AGENTS.md` must stay thin; D-10 blocks stale NODE-A and long duplicated governance sections. |
 | `sentinel-shared` | root `AGENTS.md` thin entry | root `CLAUDE.md` hub rules | `CLAUDE.md` + this map | Changes to Agent governance scripts/docs require `bash tests/test-agent-governance.sh`. |
-| `hl-app-certificates` | inherited `huanlong/AGENTS.md` | none at repo root | tzhOS `REPO-MAP.md@v1.4.12` + repo README/security boundary | Signing asset repository; Sentinel caller is deterministic-only / `skip_llm: true`; `.p8` material must stay in Secret Store. |
+| `hl-app-certificates` | inherited `huanlong/AGENTS.md` | none at repo root | tzhOS `REPO-MAP.md@v1.4.15` + repo README/security boundary | Signing asset repository; Sentinel caller is deterministic-only / `skip_llm: true`; `.p8` material must stay in Secret Store. |
 
 ## Drift Rules
 
