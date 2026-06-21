@@ -1,7 +1,7 @@
 # HuanlongAI AGENTS Governance Map
 
 > Status: ACTIVE
-> Last updated: 2026-06-17
+> Last updated: 2026-06-21
 > Owner: NODE-M operational authority; AUM / tzhOS remain governance SSOT
 
 本文件是 `huanlongAI` 工作区的 Agent 入口治理地图，不是新的仓库清单真源，也不是新的规则真源。活跃仓库清单以 tzhOS `40-PPR/REPO-MAP.md@v1.4.15` 为 SSOT；规则真源仍是各 repo 的 `CLAUDE.md`、直接或目录继承的 `AGENTS.md`、tzhOS / AUM registry、仓库 CI gate 与当前任务契约。
@@ -24,6 +24,17 @@
 | Projection drift | sentinel-shared D-10 | Repo-local scan for stale owner/runtime projection and oversized duplicated `AGENTS.md` files | `bash scripts/precheck-agent-governance.sh` from target repo root |
 | Map invariants | sentinel-shared tests | Prevent this map from becoming a second stale repo inventory | `bash tests/test-agent-governance.sh` |
 
+## Placement Decision Standard
+
+Use this order when deciding where to place a new Agent governance rule, check, or instruction:
+
+1. If the concern defines active repo inventory, formal paths, visibility, Write-Owner, or node role authority, update tzhOS `40-PPR/REPO-MAP.md` or its owning governance spec. Do not implement executable checks there unless that tzhOS spec already owns the checker.
+2. If the concern is cross-repo Agent entrypoint or projection drift, extend sentinel-shared D-10 in `scripts/precheck-agent-governance.sh`, `tests/test-agent-governance.sh`, and this map.
+3. If the concern changes role cards, Skills, dispatch packs, or runtime configuration templates, place it in `tzh-agent-configs`; then run the relevant Sentinel / D-10 checks.
+4. If the concern is only repo-local behavior, keep it in that repo's `AGENTS.md` / `CLAUDE.md`; promote to D-10 only after it becomes a repeated cross-repo drift pattern.
+
+If the concern is cross-repo Agent entrypoint or projection drift, extend sentinel-shared D-10. Do not ask the Founder to choose among tzhOS, sentinel-shared, and tzh-agent-configs again for this class of decision; apply this standard and report the chosen placement with evidence.
+
 ## Exception Map
 
 This table records only exceptions and important entry topology. It is not a full repo inventory.
@@ -40,6 +51,9 @@ Sentinel D-10 blocks:
 
 - root `CLAUDE.md` without root `AGENTS.md`;
 - stale `Write-Owner: NODE-A` / `NODE-M + NODE-A` projections;
+- stale Huanlong fixed repository-count projections such as `6 Git` / `6 仓库` / `六仓库`;
+- stale formal path projections for `sentinel-shared` under `_platform/` or `ltc-endpoint` under `_governance/`;
+- root startup phase snapshots that should point to live repo `PROGRESS.json`, current handoff, or task contracts instead;
 - stale narrow `NODE-M` read-only projections for Huanlong active repos;
 - stale `GHThemeManager.current` theme guidance;
 - long `AGENTS.md` files over 32 KiB;
