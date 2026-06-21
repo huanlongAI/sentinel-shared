@@ -51,6 +51,9 @@ assert_contains "$MAP_DOC_CONTENT" "40-PPR/check-deps.sh"
 assert_contains "$MAP_DOC_CONTENT" "hl-app-certificates"
 assert_contains "$MAP_DOC_CONTENT" ".build/checkouts"
 assert_contains "$MAP_DOC_CONTENT" ".claude/worktrees"
+assert_contains "$MAP_DOC_CONTENT" "Placement Decision Standard"
+assert_contains "$MAP_DOC_CONTENT" "If the concern is cross-repo Agent entrypoint or projection drift, extend sentinel-shared D-10"
+assert_contains "$MAP_DOC_CONTENT" "Do not ask the Founder to choose among tzhOS, sentinel-shared, and tzh-agent-configs again"
 pass "keeps AGENTS governance map anchored to REPO-MAP SSOT"
 
 # Missing Codex entrypoint is blocked when CLAUDE.md exists.
@@ -92,6 +95,33 @@ fi
 assert_contains "$STALE_OUTPUT" "stale NODE-A Write-Owner projection"
 assert_contains "$STALE_OUTPUT" "stale GHThemeManager.current projection"
 pass "blocks stale owner and theme projections"
+
+# Root startup map drift is blocked before stale workspace projections reach agents.
+ROOT_MAP_DRIFT_REPO="$TMP_ROOT/root-map-drift"
+make_repo "$ROOT_MAP_DRIFT_REPO"
+cat > "$ROOT_MAP_DRIFT_REPO/AGENTS.md" <<'EOF'
+# Workspace AGENTS
+
+01_Repos/
+├── huanlong/ # 唤龙平台产品线（6 Git 仓库 + 共享协议）
+├── _platform/sentinel-shared/ # Consistency Sentinel
+
+## 5. 当前阶段快照（2026-04-05）
+EOF
+cat > "$ROOT_MAP_DRIFT_REPO/CLAUDE.md" <<'EOF'
+# Workspace CLAUDE
+EOF
+set +e
+ROOT_MAP_DRIFT_OUTPUT=$(run_check "$ROOT_MAP_DRIFT_REPO")
+ROOT_MAP_DRIFT_CODE=$?
+set -e
+if [ "$ROOT_MAP_DRIFT_CODE" -eq 0 ]; then
+  fail "expected stale root startup map projections to fail"
+fi
+assert_contains "$ROOT_MAP_DRIFT_OUTPUT" "stale Huanlong fixed repository-count projection"
+assert_contains "$ROOT_MAP_DRIFT_OUTPUT" "stale sentinel-shared path projection"
+assert_contains "$ROOT_MAP_DRIFT_OUTPUT" "stale root phase snapshot projection"
+pass "blocks stale root startup map projections"
 
 # Long duplicate AGENTS.md is blocked.
 LONG_REPO="$TMP_ROOT/long-agents"

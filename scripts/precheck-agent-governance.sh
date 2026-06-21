@@ -59,6 +59,22 @@ while IFS= read -r file; do
     add_issue "$file contains stale NODE-A Write-Owner projection"
   fi
 
+  if grep -nE '(6[[:space:]]*Git|6[[:space:]]*仓库|六[[:space:]]*(个)?仓库)' "$file" >/dev/null 2>&1; then
+    add_issue "$file contains stale Huanlong fixed repository-count projection"
+  fi
+
+  if grep -nE '(^|[^[:alnum:]_])(01_Repos/)?_platform/sentinel-shared([^[:alnum:]_]|$)' "$file" >/dev/null 2>&1; then
+    add_issue "$file contains stale sentinel-shared path projection"
+  fi
+
+  if grep -nE '(^|[^[:alnum:]_])(01_Repos/)?_governance/ltc-endpoint([^[:alnum:]_]|$)' "$file" >/dev/null 2>&1; then
+    add_issue "$file contains stale ltc-endpoint path projection"
+  fi
+
+  if grep -nF '当前阶段快照' "$file" >/dev/null 2>&1; then
+    add_issue "$file contains stale root phase snapshot projection"
+  fi
+
   if grep -nE 'NODE-M[^\n]*(默认只读|read-only)[^\n]*(huanlong|hl-contracts|hl-platform|hl-framework|hl-factory|hl-console-native|hl-dispatch|team-memory)' "$file" >/dev/null 2>&1; then
     add_issue "$file contains stale NODE-M narrow read-only projection"
   fi
