@@ -40,6 +40,8 @@ assert_file_contains "$WORKFLOW" "GitHub Issue / Comment 门禁未通过"
 assert_file_contains "$WORKFLOW" "ai-output:v1"
 assert_file_contains "$WORKFLOW" "gh issue comment"
 assert_file_contains "$WORKFLOW" "inputs.report_comment"
+assert_file_contains "$WORKFLOW" "printf '%s\\n'"
+assert_file_not_contains "$WORKFLOW" "<<EOF"
 assert_file_not_contains "$WORKFLOW" "permissions:"
 
 assert_file_contains "$MATRIX" "GPC-008"

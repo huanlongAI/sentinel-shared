@@ -44,19 +44,19 @@ jobs:
           GATE_WARNINGS: ${{ steps.language_gate.outputs.warnings }}
           ISSUE_NUMBER: ${{ steps.language_gate.outputs.target_issue_number }}
         run: |
-          cat > "$RUNNER_TEMP/github-language-gate-comment.md" <<EOF
-          ## GitHub Issue / Comment 门禁未通过
-
-          检测目标：$GATE_TARGET_URL
-
-          门禁状态：$GATE_STATUS
-
-          错误码：$GATE_ERRORS$GATE_WARNINGS
-
-          请将 Issue（事项）标题、正文或评论补充简体中文说明后重新编辑。英文术语、命令、路径、字段名和日志可以保留，但不能提交纯英文内容。
-
-          如果评论使用 `<!-- ai-output:v1 -->`，请补齐类型、结论、依据、当前状态、下一步唯一动作、需要人处理、不确定项，并确保判断词带证据。
-          EOF
+          {
+            printf '%s\n' '## GitHub Issue / Comment 门禁未通过'
+            printf '\n'
+            printf '检测目标：%s\n' "$GATE_TARGET_URL"
+            printf '\n'
+            printf '门禁状态：%s\n' "$GATE_STATUS"
+            printf '\n'
+            printf '错误码：%s%s\n' "$GATE_ERRORS" "$GATE_WARNINGS"
+            printf '\n'
+            printf '%s\n' '请将 Issue（事项）标题、正文或评论补充简体中文说明后重新编辑。英文术语、命令、路径、字段名和日志可以保留，但不能提交纯英文内容。'
+            printf '\n'
+            printf '%s\n' '如果评论使用 `<!-- ai-output:v1 -->`，请补齐类型、结论、依据、当前状态、下一步唯一动作、需要人处理、不确定项，并确保判断词带证据。'
+          } > "$RUNNER_TEMP/github-language-gate-comment.md"
           gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/github-language-gate-comment.md"
 
       - name: Fail GitHub issue/comment gate
