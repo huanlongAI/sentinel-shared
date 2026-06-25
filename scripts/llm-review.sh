@@ -374,6 +374,7 @@ LLM_CHECKS=$(yaml_get_nested_array "$CONFIG_FILE" "llm" "checks")
 CONFIDENCE_THRESHOLD=$(yaml_get_nested "$CONFIG_FILE" "llm" "confidence_threshold" "0.7")
 CONFIG_PROVIDER=$(yaml_get_nested "$CONFIG_FILE" "llm" "provider" "auto")
 REQUESTED_PROVIDER="${SENTINEL_LLM_PROVIDER:-$CONFIG_PROVIDER}"
+ANTHROPIC_MODEL="$LLM_MODEL"
 HEIYUCODE_BASE_URL="${HEIYUCODE_BASE_URL:-$(yaml_get_nested "$CONFIG_FILE" "llm" "heiyucode_base_url" "https://www.heiyucode.com")}"
 HEIYUCODE_API_URL="${HEIYUCODE_API_URL:-${HEIYUCODE_BASE_URL%/}/v1/messages}"
 HEIYUCODE_MODEL="${HEIYUCODE_MODEL:-$(yaml_get_nested "$CONFIG_FILE" "llm" "heiyucode_model" "$LLM_MODEL")}"
@@ -587,39 +588,102 @@ PROVIDER_STDERR_BYTES="${PROVIDER_STDERR_BYTES:-0}"
 PROVIDER_ATTEMPTS="${PROVIDER_ATTEMPTS:-0}"
 PROVIDER_BASE_URL_CONFIGURED="${PROVIDER_BASE_URL_CONFIGURED:-false}"
 PROVIDER_API_URL_CONFIGURED="${PROVIDER_API_URL_CONFIGURED:-false}"
+ANTHROPIC_ERROR_REASON=""
 
-if [ "$LLM_PROVIDER" = "anthropic" ]; then
+call_anthropic_provider() {
+  local api_response api_error curl_status started response_text
+
+  LLM_PROVIDER="anthropic"
+  LLM_MODEL="$ANTHROPIC_MODEL"
+  PROVIDER_TRANSPORT="messages-api"
+  PROVIDER_HTTP_STATUS="n/a"
+  PROVIDER_AUTH_HEADER_KIND="x-api-key"
+  PROVIDER_EXIT_CODE="0"
+  PROVIDER_ATTEMPTS="1"
+  PROVIDER_DURATION_SECONDS="0"
+  PROVIDER_STDOUT_BYTES="0"
+  PROVIDER_STDERR_BYTES="0"
+  PROVIDER_BASE_URL_CONFIGURED=false
+  PROVIDER_API_URL_CONFIGURED=true
+
   if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-    echo "::error::ANTHROPIC_API_KEY not set — fail closed"
-    write_error_result "ANTHROPIC_API_KEY not configured"
-    exit 1
+    ANTHROPIC_ERROR_REASON="ANTHROPIC_API_KEY not configured"
+    return 1
   fi
 
-  API_RESPONSE=$(curl -s --max-time 120 \
+  build_messages_request_body "$REQUEST_BODY"
+  started="$(date +%s)"
+  set +e
+  api_response=$(curl -s --max-time 120 \
     -H "Content-Type: application/json" \
     -H "x-api-key: ${ANTHROPIC_API_KEY}" \
     -H "anthropic-version: 2023-06-01" \
     --data-binary "@${REQUEST_BODY}" \
-    "https://api.anthropic.com/v1/messages" 2>&1) || true
+    "https://api.anthropic.com/v1/messages" 2>&1)
+  curl_status="$?"
+  set -e
 
-  if [ -z "$API_RESPONSE" ]; then
-    echo "::error::Claude API returned empty response — fail closed"
-    write_error_result "Empty API response"
-    exit 1
+  PROVIDER_EXIT_CODE="$curl_status"
+  PROVIDER_DURATION_SECONDS="$(( $(date +%s) - started ))"
+  PROVIDER_STDOUT_BYTES="${#api_response}"
+
+  if [ "$curl_status" -ne 0 ]; then
+    ANTHROPIC_ERROR_REASON="Claude API curl error"
+    return 1
   fi
 
-  API_ERROR=$(echo "$API_RESPONSE" | jq -r '.error.message // empty' 2>/dev/null || true)
-  if [ -n "$API_ERROR" ]; then
-    echo "::error::Claude API error: $API_ERROR — fail closed"
-    write_error_result "API error: ${API_ERROR}"
-    exit 1
+  if [ -z "$api_response" ]; then
+    ANTHROPIC_ERROR_REASON="Empty API response"
+    return 1
   fi
 
-  RESPONSE_TEXT=$(echo "$API_RESPONSE" | jq -r '.content[0].text // empty' 2>/dev/null || true)
+  api_error=$(printf '%s\n' "$api_response" | jq -r '.error.message // empty' 2>/dev/null || true)
+  if [ -n "$api_error" ]; then
+    ANTHROPIC_ERROR_REASON="API error: ${api_error}"
+    return 1
+  fi
+
+  response_text=$(printf '%s\n' "$api_response" | jq -r '.content[0].text // empty' 2>/dev/null || true)
+  if [ -z "$response_text" ]; then
+    ANTHROPIC_ERROR_REASON="No text in response"
+    return 1
+  fi
+
+  RESPONSE_TEXT="$response_text"
+  return 0
+}
+
+can_fallback_to_anthropic() {
+  [ "$REQUESTED_PROVIDER" = "auto" ] && [ -n "${ANTHROPIC_API_KEY:-}" ]
+}
+
+fallback_to_anthropic_after_heiyucode_error() {
+  local reason="$1"
+  if ! can_fallback_to_anthropic; then
+    return 1
+  fi
+
+  echo "::warning::${reason}; falling back to Anthropic provider"
+  if call_anthropic_provider; then
+    return 0
+  fi
+
+  echo "::error::Anthropic fallback failed after HeiyuCode provider error: ${ANTHROPIC_ERROR_REASON} — fail closed"
+  write_error_result "Anthropic fallback failed after HeiyuCode provider error: ${ANTHROPIC_ERROR_REASON}"
+  exit 1
+}
+
+if [ "$LLM_PROVIDER" = "anthropic" ]; then
+  if ! call_anthropic_provider; then
+    echo "::error::${ANTHROPIC_ERROR_REASON} — fail closed"
+    write_error_result "$ANTHROPIC_ERROR_REASON"
+    exit 1
+  fi
 elif [ "$LLM_PROVIDER" = "heiyucode_claude_code" ]; then
   PROVIDER_TRANSPORT="messages-api"
   PROVIDER_HTTP_STATUS="n/a"
   PROVIDER_AUTH_HEADER_KIND="n/a"
+  HEIYUCODE_FALLBACK_SUCCEEDED=false
 
   if [ -z "$HEIYUCODE_TOKEN" ]; then
     write_provider_error_result "HeiyuCode token not configured" 0 0 /dev/null /dev/null
@@ -665,7 +729,7 @@ elif [ "$LLM_PROVIDER" = "heiyucode_claude_code" ]; then
 
   is_retryable_http_status() {
     case "$1" in
-      500|502|503|504|520|522|524)
+      429|500|502|503|504|520|522|524)
         return 0
         ;;
       *)
@@ -723,35 +787,61 @@ elif [ "$LLM_PROVIDER" = "heiyucode_claude_code" ]; then
   done
 
   if [ "$client_status" -eq 124 ]; then
-    write_provider_error_result "HeiyuCode Messages API timeout after ${HEIYUCODE_CLIENT_TIMEOUT_SECONDS}s" 124 "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
-    exit 1
-  fi
-  if [ "$client_status" -ne 0 ]; then
-    write_provider_error_result "HeiyuCode Messages API curl error" "$client_status" "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
-    exit 1
-  fi
-
-  if ! [[ "$HTTP_STATUS" =~ ^2[0-9][0-9]$ ]]; then
-    if [ "$HTTP_STATUS" = "401" ] || [ "$HTTP_STATUS" = "403" ]; then
-      write_provider_error_result "HeiyuCode Messages API auth error HTTP ${HTTP_STATUS}" 0 "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
+    if fallback_to_anthropic_after_heiyucode_error "HeiyuCode Messages API timeout after ${HEIYUCODE_CLIENT_TIMEOUT_SECONDS}s"; then
+      HEIYUCODE_FALLBACK_SUCCEEDED=true
     else
-      write_provider_error_result "HeiyuCode Messages API HTTP ${HTTP_STATUS}" 0 "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
+      write_provider_error_result "HeiyuCode Messages API timeout after ${HEIYUCODE_CLIENT_TIMEOUT_SECONDS}s" 124 "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
+      exit 1
     fi
-    exit 1
+  fi
+  if [ "$HEIYUCODE_FALLBACK_SUCCEEDED" != true ] && [ "$client_status" -ne 0 ]; then
+    if fallback_to_anthropic_after_heiyucode_error "HeiyuCode Messages API curl error"; then
+      HEIYUCODE_FALLBACK_SUCCEEDED=true
+    else
+      write_provider_error_result "HeiyuCode Messages API curl error" "$client_status" "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
+      exit 1
+    fi
   fi
 
-  set +e
-  RESPONSE_TEXT="$(jq -r '[.content[]? | select(.type == "text") | .text] | join("\n\n")' "$API_RESPONSE_FILE" 2>"$API_ERR_FILE")"
-  parse_status="$?"
-  set -e
-  if [ "$parse_status" -ne 0 ]; then
-    write_provider_error_result "HeiyuCode Messages API returned invalid JSON" "$parse_status" "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
-    exit 1
+  if [ "$HEIYUCODE_FALLBACK_SUCCEEDED" != true ] && ! [[ "$HTTP_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+    heiyucode_http_reason="HeiyuCode Messages API HTTP ${HTTP_STATUS}"
+    if [ "$HTTP_STATUS" = "401" ] || [ "$HTTP_STATUS" = "403" ]; then
+      heiyucode_http_reason="HeiyuCode Messages API auth error HTTP ${HTTP_STATUS}"
+    fi
+    if fallback_to_anthropic_after_heiyucode_error "$heiyucode_http_reason"; then
+      HEIYUCODE_FALLBACK_SUCCEEDED=true
+    else
+      write_provider_error_result "$heiyucode_http_reason" 0 "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
+      exit 1
+    fi
   fi
 
-  if [ -z "$RESPONSE_TEXT" ]; then
-    write_provider_error_result "No text in response" 0 "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
-    exit 1
+  if [ "$HEIYUCODE_FALLBACK_SUCCEEDED" != true ]; then
+    set +e
+    RESPONSE_TEXT="$(jq -r '[.content[]? | select(.type == "text") | .text] | join("\n\n")' "$API_RESPONSE_FILE" 2>"$API_ERR_FILE")"
+    parse_status="$?"
+    set -e
+    if [ "$parse_status" -ne 0 ]; then
+      if fallback_to_anthropic_after_heiyucode_error "HeiyuCode Messages API returned invalid JSON"; then
+        HEIYUCODE_FALLBACK_SUCCEEDED=true
+      else
+        write_provider_error_result "HeiyuCode Messages API returned invalid JSON" "$parse_status" "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
+        exit 1
+      fi
+    fi
+  fi
+
+  if [ "$HEIYUCODE_FALLBACK_SUCCEEDED" != true ] && [ -z "$RESPONSE_TEXT" ]; then
+    if fallback_to_anthropic_after_heiyucode_error "No text in response"; then
+      HEIYUCODE_FALLBACK_SUCCEEDED=true
+    else
+      write_provider_error_result "No text in response" 0 "$client_duration" "$API_RESPONSE_FILE" "$API_ERR_FILE"
+      exit 1
+    fi
+  fi
+
+  if [ "$HEIYUCODE_FALLBACK_SUCCEEDED" = true ]; then
+    echo "HeiyuCode provider failed; Anthropic fallback response received"
   fi
 fi
 
