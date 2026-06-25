@@ -864,6 +864,24 @@ write_review_parse_error() {
   fi
 }
 
+fallback_to_anthropic_after_heiyucode_review_parse_error() {
+  local reason="$1"
+  if [ "$LLM_PROVIDER" != "heiyucode_claude_code" ]; then
+    return 1
+  fi
+  if ! can_fallback_to_anthropic; then
+    return 1
+  fi
+
+  if fallback_to_anthropic_after_heiyucode_error "$reason"; then
+    API_RESPONSE_FILE=""
+    API_ERR_FILE=""
+    return 0
+  fi
+
+  return 1
+}
+
 recover_malformed_review_json() {
   local checks_file
   checks_file="$(mktemp)"
@@ -915,21 +933,35 @@ print(json.dumps({
   rm -f "$checks_file"
 }
 
+extract_review_json_from_response() {
+  local response_text="$1"
+  local review_json
+
+  review_json=$(printf '%s\n' "$response_text" | sed -n '/^{/,/^}/p' || true)
+  if [ -z "$review_json" ]; then
+    review_json=$(printf '%s\n' "$response_text" | sed -n '/```json/,/```/p' | grep -v '```' || true)
+  fi
+  if [ -z "$review_json" ]; then
+    review_json=$(printf '%s\n' "$response_text" | sed -n '/```/,/```/p' | grep -v '```' || true)
+  fi
+
+  printf '%s\n' "$review_json"
+}
+
 # Extract JSON from response
-REVIEW_JSON=$(echo "$RESPONSE_TEXT" | sed -n '/^{/,/^}/p' || true)
-if [ -z "$REVIEW_JSON" ]; then
-  REVIEW_JSON=$(echo "$RESPONSE_TEXT" | sed -n '/```json/,/```/p' | grep -v '```' || true)
-fi
-if [ -z "$REVIEW_JSON" ]; then
-  REVIEW_JSON=$(echo "$RESPONSE_TEXT" | sed -n '/```/,/```/p' | grep -v '```' || true)
-fi
+REVIEW_JSON=$(extract_review_json_from_response "$RESPONSE_TEXT")
 
 # Validate JSON and extract verdict
 VERDICT="ESCALATE"
 PASSED=true
 if [ -z "$(printf '%s' "$REVIEW_JSON" | tr -d '[:space:]')" ]; then
-  write_review_parse_error "Could not extract LLM review JSON"
-  exit 1
+  if fallback_to_anthropic_after_heiyucode_review_parse_error "Could not extract LLM review JSON"; then
+    REVIEW_JSON=$(extract_review_json_from_response "$RESPONSE_TEXT")
+  fi
+  if [ -z "$(printf '%s' "$REVIEW_JSON" | tr -d '[:space:]')" ]; then
+    write_review_parse_error "Could not extract LLM review JSON"
+    exit 1
+  fi
 fi
 if ! printf '%s\n' "$REVIEW_JSON" | jq -e 'type == "object" and length > 0' >/dev/null 2>&1; then
   RECOVERED_REVIEW_JSON="$(recover_malformed_review_json || true)"
