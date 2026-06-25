@@ -592,6 +592,40 @@ test_heiyucode_provider_non_json_review_fails_closed_with_valid_result_json() {
   ' "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "Non-JSON review diagnostics mismatch"
 }
 
+test_auto_falls_back_to_anthropic_after_heiyucode_non_json_review() {
+  local tmp fake_bin calls
+  tmp="$(mktemp -d)"
+  fake_bin="$tmp/bin"
+  calls="$tmp/calls"
+  mkdir -p "$fake_bin" "$calls"
+  make_repo "$tmp/repo"
+  write_fake_heiyucode_curl "$fake_bin/curl"
+
+  (
+    cd "$tmp/repo"
+    PATH="$fake_bin:$PATH" \
+      FAKE_CALL_DIR="$calls" \
+      FAKE_CURL_MODE="non_json_text" \
+      SENTINEL_LLM_PROVIDER="auto" \
+      HEIYUCODE_AUTH_TOKEN="heiyucode-test-token" \
+      ANTHROPIC_API_KEY="anthropic-test-key" \
+      HEIYUCODE_BASE_URL="https://www.heiyucode.com" \
+      HEIYUCODE_MODEL="claude-heiyu-test" \
+      "$ROOT_DIR/scripts/llm-review.sh"
+  )
+
+  [ "$(cat "$calls/curl.count")" = "1" ] || fail "Fallback path should call HeiyuCode once before Anthropic"
+  grep -q "https://www.heiyucode.com/v1/messages" "$calls/curl.args" || fail "HeiyuCode URL was not attempted"
+  grep -q "https://api.anthropic.com/v1/messages" "$calls/curl.args" || fail "Anthropic fallback URL was not attempted"
+  jq -e '
+    .provider == "anthropic"
+    and .model == "claude-test-model"
+    and .transport == "messages-api"
+    and .passed == true
+    and .attempts == 1
+  ' "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "Anthropic fallback result mismatch for non-JSON HeiyuCode review"
+}
+
 test_heiyucode_provider_recovers_malformed_fenced_pass_json() {
   local tmp fake_bin calls
   tmp="$(mktemp -d)"
@@ -1142,6 +1176,7 @@ test_heiyucode_provider_timeout_fails_closed_without_waiting_for_job_timeout
 test_heiyucode_provider_nonzero_exit_fails_closed_with_diagnostics
 test_heiyucode_provider_empty_output_fails_closed_with_diagnostics
 test_heiyucode_provider_non_json_review_fails_closed_with_valid_result_json
+test_auto_falls_back_to_anthropic_after_heiyucode_non_json_review
 test_heiyucode_provider_recovers_malformed_fenced_pass_json
 test_heiyucode_provider_http_error_fails_closed_with_response_tail
 test_heiyucode_provider_retries_retryable_524_once
