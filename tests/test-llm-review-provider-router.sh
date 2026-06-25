@@ -74,7 +74,7 @@ test_anthropic_provider_uses_messages_api() {
   cat > "$fake_bin/curl" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" > "$FAKE_CALL_DIR/curl.args"
+printf '%s\n' "$*" >> "$FAKE_CALL_DIR/curl.args"
 cat <<'JSON'
 {"content":[{"text":"{\"verdict\":\"PASS\",\"checks\":{\"GPC-003\":{\"verdict\":\"PASS\",\"confidence\":0.95,\"reason\":\"ok\"}},\"summary\":\"ok\"}"}]}
 JSON
@@ -101,7 +101,7 @@ write_fake_heiyucode_curl() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-printf '%s\n' "$*" > "$FAKE_CALL_DIR/curl.args"
+printf '%s\n' "$*" >> "$FAKE_CALL_DIR/curl.args"
 
 out=""
 while [ "$#" -gt 0 ]; do
@@ -119,6 +119,13 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+if grep -q "https://api.anthropic.com/v1/messages" "$FAKE_CALL_DIR/curl.args"; then
+  cat <<'JSON'
+{"content":[{"text":"{\"verdict\":\"PASS\",\"checks\":{\"GPC-003\":{\"verdict\":\"PASS\",\"confidence\":0.97,\"reason\":\"anthropic fallback ok\"}},\"summary\":\"anthropic fallback ok\"}"}]}
+JSON
+  exit 0
+fi
 
 count_file="$FAKE_CALL_DIR/curl.count"
 count=0
@@ -186,6 +193,16 @@ EOF
     ;;
   http_500)
     write_response 500 '{"error":{"message":"upstream unavailable"}}'
+    ;;
+  http_429_then_pass)
+    if [ "$count" -eq 1 ]; then
+      write_response 429 '{"error":{"message":"rate limited"}}'
+    else
+      write_response 200 '{"content":[{"type":"text","text":"{\"verdict\":\"PASS\",\"checks\":{\"GPC-003\":{\"verdict\":\"PASS\",\"confidence\":0.96,\"reason\":\"ok\"}},\"summary\":\"ok\"}"}]}'
+    fi
+    ;;
+  http_429_always)
+    write_response 429 '{"error":{"message":"rate limited"}}'
     ;;
   http_524_then_pass)
     if [ "$count" -eq 1 ]; then
@@ -676,6 +693,71 @@ test_heiyucode_provider_retries_retryable_524_once() {
   ' "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "Retryable 524 retry result mismatch"
 }
 
+test_heiyucode_provider_retries_retryable_429_once() {
+  local tmp fake_bin calls
+  tmp="$(mktemp -d)"
+  fake_bin="$tmp/bin"
+  calls="$tmp/calls"
+  mkdir -p "$fake_bin" "$calls"
+  make_repo "$tmp/repo"
+  write_fake_heiyucode_curl "$fake_bin/curl"
+
+  (
+    cd "$tmp/repo"
+    PATH="$fake_bin:$PATH" \
+      FAKE_CALL_DIR="$calls" \
+      FAKE_CURL_MODE="http_429_then_pass" \
+      SENTINEL_LLM_PROVIDER="heiyucode" \
+      HEIYUCODE_AUTH_TOKEN="heiyucode-test-token" \
+      HEIYUCODE_BASE_URL="https://www.heiyucode.com" \
+      HEIYUCODE_MODEL="claude-heiyu-test" \
+      "$ROOT_DIR/scripts/llm-review.sh"
+  )
+
+  [ "$(cat "$calls/curl.count")" = "2" ] || fail "Retryable 429 should be retried exactly once"
+  jq -e '
+    .provider == "heiyucode_claude_code"
+    and .transport == "messages-api"
+    and .http_status == "200"
+    and .attempts == 2
+    and .passed == true
+  ' "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "Retryable 429 retry result mismatch"
+}
+
+test_auto_falls_back_to_anthropic_after_heiyucode_http_429() {
+  local tmp fake_bin calls
+  tmp="$(mktemp -d)"
+  fake_bin="$tmp/bin"
+  calls="$tmp/calls"
+  mkdir -p "$fake_bin" "$calls"
+  make_repo "$tmp/repo"
+  write_fake_heiyucode_curl "$fake_bin/curl"
+
+  (
+    cd "$tmp/repo"
+    PATH="$fake_bin:$PATH" \
+      FAKE_CALL_DIR="$calls" \
+      FAKE_CURL_MODE="http_429_always" \
+      SENTINEL_LLM_PROVIDER="auto" \
+      HEIYUCODE_AUTH_TOKEN="heiyucode-test-token" \
+      ANTHROPIC_API_KEY="anthropic-test-key" \
+      HEIYUCODE_BASE_URL="https://www.heiyucode.com" \
+      HEIYUCODE_MODEL="claude-heiyu-test" \
+      "$ROOT_DIR/scripts/llm-review.sh"
+  )
+
+  [ "$(cat "$calls/curl.count")" = "2" ] || fail "Fallback path should retry HeiyuCode once before Anthropic"
+  grep -q "https://www.heiyucode.com/v1/messages" "$calls/curl.args" || fail "HeiyuCode URL was not attempted"
+  grep -q "https://api.anthropic.com/v1/messages" "$calls/curl.args" || fail "Anthropic fallback URL was not attempted"
+  jq -e '
+    .provider == "anthropic"
+    and .model == "claude-test-model"
+    and .transport == "messages-api"
+    and .passed == true
+    and .attempts == 1
+  ' "$tmp/repo/.sentinel/results/llm-review.json" >/dev/null || fail "Anthropic fallback result mismatch"
+}
+
 test_heiyucode_provider_retries_x_api_key_after_bearer_auth_failure() {
   local tmp fake_bin calls
   tmp="$(mktemp -d)"
@@ -1063,6 +1145,8 @@ test_heiyucode_provider_non_json_review_fails_closed_with_valid_result_json
 test_heiyucode_provider_recovers_malformed_fenced_pass_json
 test_heiyucode_provider_http_error_fails_closed_with_response_tail
 test_heiyucode_provider_retries_retryable_524_once
+test_heiyucode_provider_retries_retryable_429_once
+test_auto_falls_back_to_anthropic_after_heiyucode_http_429
 test_heiyucode_provider_retries_x_api_key_after_bearer_auth_failure
 test_aggregate_includes_llm_review_failure
 test_aggregate_fails_closed_when_required_result_is_missing
