@@ -211,6 +211,16 @@ jobs:
           CANONICAL_BODY="${CANONICAL_BODY//__EXPR_HEIYUCODE_BASE_URL__/$(gha_expr "vars.HEIYUCODE_BASE_URL || 'https://www.heiyucode.com'")}"
           CANONICAL_BODY="${CANONICAL_BODY//__EXPR_HEIYUCODE_MODEL__/$(gha_expr "vars.HEIYUCODE_MODEL || ''")}"
           CALLER_SYNC_TOKEN_REMEDIATION="CASCADE_TOKEN must have repo read/write access to every selected downstream repo and workflow write permission, because caller-sync updates .github/workflows/consistency-sentinel.yml."
+          CALLER_SYNC_COMMIT_MESSAGE="$(cat <<EOF
+          chore(sentinel): sync caller workflow to latest template
+
+          Agent-ID: codex-cli
+          Run-ID: caller-sync-${GITHUB_RUN_ID}
+          WO-ID: sentinel-caller-sync
+          Node-ID: NODE-M
+          Human-Author: tongzhenghui
+          EOF
+          )"
 
           # Normalize canonical: strip comments, leading/trailing whitespace,
           # collapse whitespace for comparison
@@ -368,7 +378,7 @@ jobs:
                   -H "Accept: application/vnd.github+json" \
                   "https://api.github.com/repos/huanlongAI/${REPO}/contents/.github/workflows/consistency-sentinel.yml" \
                   -d "$(jq -n \
-                    --arg msg "chore(sentinel): sync caller workflow to latest template" \
+                    --arg msg "$CALLER_SYNC_COMMIT_MESSAGE" \
                     --arg content "$ENCODED" \
                     --arg sha "$FILE_SHA" \
                     --arg branch "sentinel-caller-sync" \

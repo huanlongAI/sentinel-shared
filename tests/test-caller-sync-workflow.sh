@@ -103,4 +103,17 @@ do
     || fail "caller-sync workflow missing token diagnostic marker: $expected"
 done
 
+for expected in \
+  'CALLER_SYNC_COMMIT_MESSAGE=' \
+  'Agent-ID: codex-cli' \
+  'Run-ID: caller-sync-${GITHUB_RUN_ID}' \
+  'WO-ID: sentinel-caller-sync' \
+  'Node-ID: NODE-M' \
+  'Human-Author: tongzhenghui' \
+  '--arg msg "$CALLER_SYNC_COMMIT_MESSAGE"'
+do
+  grep -Fq -- "$expected" "$CALLER_SYNC_WORKFLOW" \
+    || fail "caller-sync workflow missing governance trailer marker: $expected"
+done
+
 echo "caller-sync dry_run input handling test passed"
