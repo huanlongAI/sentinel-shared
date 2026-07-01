@@ -35,6 +35,54 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Boundary maintenance gates
+        shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${PR_BASE_SHA:-}" ]]; then
+            base_sha="${PR_BASE_SHA}"
+          else
+            base_sha="$(git rev-parse HEAD^ 2>/dev/null || git rev-parse HEAD)"
+          fi
+
+          changed_files="$(mktemp)"
+          diff_numstat="$(mktemp)"
+          changed_diff="$(mktemp)"
+
+          git diff --name-only "${base_sha}" HEAD > "${changed_files}"
+          git diff --numstat "${base_sha}" HEAD > "${diff_numstat}"
+          git diff --unified=0 "${base_sha}" HEAD > "${changed_diff}"
+
+          protected_path_pattern='^(\.github/workflows/(cascade-verify|caller-sync|matrix-updater|sentinel-autofix|review-gate-audit)\.yml$|matrix/|profiles/|scripts/(llm-review|llm-message-client|escalate|auto-fix)\.sh$)'
+          if grep -E "${protected_path_pattern}" "${changed_files}"; then
+            echo "::error::protected Sentinel shared path touched by this diff"
+            exit 1
+          fi
+
+          changed_file_count="$(wc -l < "${changed_files}" | tr -d ' ')"
+          changed_line_count="$(awk 'BEGIN { total=0 } $1 != "-" { total += $1 } $2 != "-" { total += $2 } END { print total }' "${diff_numstat}")"
+
+          if (( changed_file_count > 25 )); then
+            echo "::error::diff file budget exceeded: ${changed_file_count} > 25"
+            exit 1
+          fi
+
+          if (( changed_line_count > 800 )); then
+            echo "::error::diff line budget exceeded: ${changed_line_count} > 800"
+            exit 1
+          fi
+
+          secret_pattern='(AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9_]{36,}|github_pat_[A-Za-z0-9_]{40,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----)'
+          if grep -E '^\+[^+]' "${changed_diff}" | grep -E "${secret_pattern}"; then
+            echo "::error::possible secret detected in added lines"
+            exit 1
+          fi
 
       - name: Run shell regression tests
         run: |
