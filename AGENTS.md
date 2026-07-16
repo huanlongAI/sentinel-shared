@@ -1,3 +1,5 @@
+> ⚠️ 本仓已于 2026-07-11 归档冻结；本文件约束仅作历史 provenance，不再具有现行效力。
+
 # sentinel-shared — Codex Entry
 
 本文件是 Codex 入口。完整项目规则见 `CLAUDE.md`，两者冲突时以 `CLAUDE.md` 和上游 tzhOS / AUM 真源为准。

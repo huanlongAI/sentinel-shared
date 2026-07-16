@@ -1,3 +1,5 @@
+> ⚠️ 本仓已于 2026-07-11 归档冻结；本文件约束仅作历史 provenance，不再具有现行效力。
+
 # sentinel-shared — Consistency Sentinel Hub
 
 > **Write-Owner: NODE-M** — MULTI-NODE-COWORK-SPEC v0.3 §3.2
