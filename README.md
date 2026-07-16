@@ -1,3 +1,7 @@
+> ⚠️ **本仓已于 2026-07-11 归档冻结（终态，只读）。**
+> 继任真源：本仓 reusable workflows 以冻结状态仍可被既有 caller 引用（归档不等于失效）；不再接受任何变更，后继门禁体系另行治理。
+> 本仓内容仅作历史 provenance，任何文档与流水线不得再以本仓为现行依据。
+
 # sentinel-shared
 
 Consistency Sentinel 共享基础设施 — Reusable Workflows + Scripts + Matrix。
